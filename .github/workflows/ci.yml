@@ -23,7 +23,7 @@ jobs:
           - { cc: clang, goto: 'ON'  }
     name: c ${{ matrix.cc }} goto=${{ matrix.goto }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: configurar
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DFVM_USE_GOTO=${{ matrix.goto }}
       - name: compilar
@@ -35,7 +35,7 @@ jobs:
     runs-on: windows-latest
     name: c msvc switch
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: configurar e compilar
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -52,7 +52,7 @@ jobs:
         features: ['', 'boxed-stack']
     name: rust stack=${{ matrix.features == '' && 'vec' || matrix.features }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -74,7 +74,7 @@ jobs:
     needs: [c-linux, rust]
     name: compatibilidade C <-> Rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: compilar as duas
         run: |
@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [c-linux, rust]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: compilar tudo
         run: |

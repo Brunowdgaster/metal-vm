@@ -3,7 +3,8 @@
 Uma VM de bytecode com montador, desmontador, coletor de lixo e quatro
 configurações de execução comparadas sob medição. As duas implementações
 produzem **bytecode byte a byte idêntico** e executam o arquivo uma da outra.
-Projeto 01 de [14](../poliglota) de um portfólio poliglota.
+Projeto 01 de 14 de um portfólio poliglota — índice em
+[Brunowdgaster/poliglota](https://github.com/Brunowdgaster/poliglota).
 
 ```
 $ fvm run tests/cases/fib.fasm
@@ -104,10 +105,12 @@ servidor, mesma ordem de grandeza:
 | i5-8250U | −46,5 % | −53,1 % |
 | runner EPYC 9V74 | −40,9 % | −45,5 % |
 
-Esta é a resposta da pergunta 2 e o resultado mais sólido do projeto. A causa
-provável é o teste de limite que o Rust insere em cada indexação, somado à
-propagação de erro com `?` — *provável* porque separar as duas exige contadores
-de hardware, que estão no roadmap.
+Esta é a resposta da pergunta 2 e o resultado mais sólido do projeto. E a
+causa está **medida**, não suposta: o `perf` mostra que o Rust executa
+**49,79 instruções x86 por instrução de bytecode contra 29,86 do C** (+66,7 %) e
+**12,24 saltos contra 6,85** (+78,7 %). Esses ~5,4 saltos extras por despacho são
+os testes de limite de cada indexação mais o desvio que o `?` gera após cada
+chamada auxiliar.
 
 **2. O ownership obriga a arena com handles, e isso apaga a desvantagem do Rust
 na carga de alocação.** Um grafo de objetos com ciclos não passa pelo borrow
@@ -147,18 +150,26 @@ flags, três CPUs:
 **O sinal muda com a CPU.** Não existe número publicável aqui — e dizer isso é
 a resposta, não a ausência dela.
 
-"Computed goto é mais rápido que switch" é folclore repetido na área desde Ertl
-& Gregg (2003), quando os preditores de saltos eram simples e a técnica de fato
-dava ao preditor um sítio por opcode em vez de um compartilhado. Preditores
-modernos do tipo ITTAGE acertam o `switch` quase tão bem, e o que sobra para o
-computed goto é o custo: código maior, mais pressão no cache de instruções.
-Rohou, Swamy e Seznec mediram exatamente isso em *Branch Prediction and the
-Performance of Interpreters — Don't Trust Folklore* (CGO 2015). Este projeto
-reencontrou o resultado deles sem ter partido dele.
+O `perf` explicou **por quê**, e no caminho refutou a explicação que este README
+oferecia antes. A taxa de erro de salto é de **0,051 % no `switch` e 0,059 % no
+computed goto**: o preditor acerta as duas praticamente sempre, então não há
+nada para o computed goto melhorar nessa frente. O folclore da área — repetido
+desde Ertl & Gregg (2003) — atribui o ganho à predição, e **isto não se aplica a
+esta CPU**.
 
-Confirmar o mecanismo exige `perf stat` contando *branch misses* nas três
-máquinas. Até lá, a afirmação é só esta: **o efeito é menor que a variação
-entre hardwares, e duas máquinas discordaram da terceira.**
+O ganho real é executar menos trabalho: **25,71 instruções x86 por instrução de
+bytecode contra 29,86** (−13,9 %) e **4,85 saltos contra 6,85** (−29,2 %). Os
+dois saltos a menos são exatamente os dois que o `switch` obriga: o teste de
+faixa do opcode contra `OP__COUNT` e o salto de volta ao topo do laço.
+
+E é por isso que o sinal inverte entre CPUs: o goto economiza ~14 % em
+instruções, mas tem IPC *menor* (3,29 contra 3,48). O resultado é a diferença
+entre duas quantidades da mesma ordem, e qual domina depende da microarquitetura.
+Rohou, Swamy e Seznec descreveram esse quadro em *Branch Prediction and the
+Performance of Interpreters — Don't Trust Folklore* (CGO 2015); este projeto
+reencontrou o resultado por conta própria, inclusive errando a hipótese primeiro.
+
+Números completos em [docs/BENCH.md](docs/BENCH.md#contadores-de-hardware-o-que-o-perf-mostrou).
 
 **A vantagem do Rust na alocação**, que uma versão anterior deste README
 afirmava: +3,7 % num hardware, −4,3 % no outro. É empate, não vitória.
@@ -457,10 +468,11 @@ vantagem que não teria nada a ver com desempenho.
 
 Em ordem de retorno esperado:
 
-1. **`perf stat`** contando ciclos e *branch misses*, em CPU sem throttling,
-   para (a) explicar por que o computed goto inverte de sinal entre as duas
-   máquinas e (b) separar as três hipóteses sobre os 44 % do Rust. Virou o item
-   mais importante do projeto depois do resultado do runner.
+1. ~~**`perf stat`** contando ciclos e *branch misses*.~~ **Feito.** O `perf`
+   funciona no WSL2 desta máquina; mediu que a hipótese do preditor estava
+   errada e que a do custo de instruções estava certa. Falta rodá-lo **nos
+   runners**, para ver se a inversão de sinal aparece nos contadores lá — VMs do
+   Azure podem não expor a PMU, então é um teste, não uma promessa.
 2. **Rust seguro otimizado**: `ip` como iterador, `chunks_exact`, erro sem
    alocação. Mede quanto da diferença era a linguagem e quanto era a escrita.
 3. **Arena no C também**, para isolar "arena × malloc" de "C × Rust" no
@@ -489,6 +501,12 @@ Em ordem de retorno esperado:
   reclamar, e a tabela saiu plausível com uma linha a menos. Hoje ele falha com
   erro. *Ferramenta de medição que degrada em silêncio é pior que ferramenta
   quebrada.*
+- **O contador de hardware refutou a explicação que eu dava como provável.** A
+  hipótese era preditor de saltos; a taxa de erro é 0,05 % nas duas variantes,
+  ou seja, não havia nada a melhorar ali. A causa é contagem de instruções, e
+  são **dois saltos por despacho** — o teste de faixa do opcode e o retorno ao
+  topo do laço. Hipótese plausível, consistente com a literatura popular da
+  área, e errada: só o contador resolveu.
 - **Um segundo compilador encontrou um UB que a suíte de testes não pegou.**
   Testes verificam o que o código faz; o compilador verifica o que o código
   *significa*.
@@ -527,7 +545,8 @@ Em ordem de retorno esperado:
 | Harness de benchmark com dispersão | ✅ |
 | CI (gcc/clang × switch/goto, MSVC, cargo, cross-compat, bench) | ✅ 9/9 jobs verdes |
 | Portes C++, Zig, Assembly, Nim, Odin, D, V, Ada | ⬜ não iniciados |
-| `perf` para explicar a divergência do goto entre CPUs e o gap do Rust | ⬜ pendente |
+| `perf`: contadores de hardware no notebook | ✅ mecanismo identificado nas duas comparações |
+| `perf` nos runners do CI (para explicar a inversão entre CPUs) | ⬜ pendente, pode não haver PMU |
 | Benchmark das 4 configurações em 3 CPUs | ✅ feito; o que reproduz e o que não está separado |
 
 ## Licença

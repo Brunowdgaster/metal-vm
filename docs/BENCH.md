@@ -271,32 +271,141 @@ A consequência de engenharia foi manter **as duas** implementações atrás da
 mesma interface (`rust/src/stack.rs`, feature `boxed-stack`), para que a
 comparação seja reproduzível por qualquer pessoa, numa sessão só.
 
+## Contadores de hardware: o que o `perf` mostrou
+
+Item 1 do roadmap, executado. O `perf` **funciona no WSL2** desta máquina
+(kernel 6.18.58.1-microsoft-standard-WSL2, `perf_event_paranoid = 2`, PMU
+exposta em `/sys/devices/cpu/`), o que não era óbvio — WSL2 costuma não
+virtualizar a PMU.
+
+```bash
+perf stat -r 5 -e cycles,instructions,branches,branch-misses,L1-icache-load-misses \
+    <binario> run bench/loop.fasm
+```
+
+Cinco repetições por configuração, no i5-8250U. Números absolutos e, ao lado,
+normalizados pelas **390.000.012 instruções de bytecode** que o `loop` executa —
+a mesma contagem nas quatro configurações, o que é o que torna a comparação
+válida.
+
+| | ciclos | instruções x86 | saltos | erros de salto | L1-icache miss |
+|---|---|---|---|---|---|
+| C, switch | 3,347 G | 11,645 G | 2,671 G | 1,369 M | 836,9 K |
+| C, computed goto | 3,046 G | 10,025 G | 1,891 G | 1,116 M | 773,4 K |
+| Rust, `Vec` | 6,730 G | 19,419 G | 4,772 G | 9,841 M | 2,402 M |
+| Rust, `Box<[T]>` | 6,586 G | 20,469 G | 4,952 G | 12,686 M | 2,367 M |
+
+Por instrução de bytecode:
+
+| | ciclos | instruções x86 | saltos | taxa de erro de salto | IPC |
+|---|---|---|---|---|---|
+| C, switch | 8,58 | 29,86 | 6,85 | **0,051 %** | 3,48 |
+| C, computed goto | 7,81 | **25,71** | **4,85** | **0,059 %** | 3,29 |
+| Rust, `Vec` | 17,26 | 49,79 | 12,24 | 0,206 % | 2,89 |
+| Rust, `Box<[T]>` | 16,89 | 52,48 | 12,70 | 0,256 % | **3,11** |
+
+### A hipótese do preditor de saltos está refutada
+
+A taxa de erro de salto é de **0,051 % no `switch` e 0,059 % no computed goto**.
+O preditor acerta as duas, praticamente sempre. Não há nada para o computed goto
+melhorar nessa frente — a explicação que este projeto vinha oferecendo, e que é
+o folclore da área, **não se aplica a esta CPU**.
+
+O que o computed goto realmente faz é **executar menos trabalho**:
+
+| | instruções x86 | saltos |
+|---|---|---|
+| por instrução de bytecode, switch | 29,86 | 6,85 |
+| por instrução de bytecode, goto | 25,71 | 4,85 |
+| diferença | **−13,9 %** | **−29,2 %** |
+
+**Dois saltos a menos por despacho**, e são exatamente os dois que o `switch`
+obriga: o teste de faixa do opcode contra `OP__COUNT` (que gera o `default:`) e
+o salto de volta ao topo do laço. No computed goto, `VM_NEXT` é um único salto
+indireto que já está no fim de cada instrução — nenhum dos dois existe.
+
+Isso também explica por que o efeito **inverte de sinal entre CPUs**: o ganho é
+de ~14 % em instruções executadas, mas o IPC do goto é *menor* (3,29 contra
+3,48). O resultado final é a diferença entre duas quantidades da mesma ordem, e
+qual delas domina depende da largura do *back-end* e do cache de instruções de
+cada microarquitetura. Num i5-8250U o saldo foi positivo; nos runners, nulo ou
+negativo.
+
+### A hipótese sobre o Rust está confirmada, e quantificada
+
+O porte em Rust seguro executa **49,79 instruções x86 por instrução de
+bytecode, contra 29,86 do C** — **+66,7 %** — e **12,24 saltos contra 6,85**
+(**+78,7 %**).
+
+Esses ~5,4 saltos extras por instrução de bytecode são a resposta direta: são os
+testes de limite que o Rust insere em cada indexação (do bytecode, da pilha, do
+array) somados ao desvio que o `?` gera após cada chamada auxiliar. A hipótese
+do README deixa de ser hipótese: **está medida**.
+
+Em ciclos a penalidade é maior que em instruções (+101 % contra +66,7 %), e o
+IPC cai de 3,48 para 2,89. É o esperado quando se acrescentam **cargas
+dependentes**: cada teste de limite precisa ler o comprimento do slice da
+memória antes de poder indexar, o que cria uma dependência que o processador não
+consegue esconder.
+
+Os erros de salto do Rust são 7× os do C em números absolutos (9,8 M contra
+1,4 M), mas a taxa segue baixíssima (0,206 %): contribuem pouco. O volume de
+instruções é a causa dominante.
+
+### Uma surpresa na pilha `Box<[T]>`
+
+O `boxed` executa **mais** instruções que o `Vec` (52,48 contra 49,79 por
+instrução de bytecode, +5,4 %) e **mais** saltos (+3,8 %) — exatamente o que o
+comentário em `rust/src/stack.rs` previa: ele paga dois testes, o explícito
+contra `STACK_MAX` e o que o Rust insere na indexação do slice.
+
+E ainda assim gasta **menos ciclos** (6,586 G contra 6,730 G), porque o IPC sobe
+de 2,89 para 3,11. Mais instruções, executadas com mais paralelismo, saem na
+frente.
+
+Ou seja: o raciocínio do comentário sobre *contagem de instruções* estava certo,
+e a conclusão sobre *velocidade* estava errada. Os ~2–5 % de vantagem do
+`boxed` não vêm de fazer menos trabalho — vêm de o trabalho que ele faz ser mais
+previsível e independente, o que o *back-end* da CPU aproveita melhor.
+
+### O que ainda falta
+
+Rodar `perf` **nos runners** do CI, para saber se a inversão de sinal lá aparece
+nos contadores — se é IPC, cache de instruções ou outra coisa. Runners do Azure
+podem não expor a PMU; é um teste, não uma promessa.
+
 ## Por que o Rust seguro perdeu ~44 % no dispatch
 
-Hipóteses, em ordem de suspeita, **não medidas individualmente** — separá-las
-exige `perf` contando ciclos e *branch misses*, que é o próximo item do
-roadmap. Listadas para que ninguém confunda hipótese com resultado:
+**Medido**, não suposto — ver a seção de contadores de hardware acima:
 
-1. **Teste de limite por indexação.** Cada leitura de bytecode (`code.get(ip)`,
-   `code[ip..ip+8]`) e cada acesso à pilha carrega uma verificação que o C não
-   paga. O compilador não consegue eliminá-la porque não sabe que
-   `stack.len() == STACK_MAX`.
-2. **Propagação de erro com `?`.** Cada operação devolve `Result`, e o `?`
-   insere um desvio após cada chamada auxiliar. Em C, o erro é um `return`
-   direto de dentro do macro.
-3. **Ausência de computed goto.** O C tem essa variante; o Rust seguro não tem
-   equivalente. Mas como a variante só ganha em parte do hardware (ver acima),
-   isso deixou de ser desvantagem relevante do Rust: a comparação justa sempre
-   foi contra o `switch`, e é dela que vêm os ~44 %.
+| | instruções x86 por instrução de bytecode | saltos |
+|---|---|---|
+| C, switch | 29,86 | 6,85 |
+| Rust seguro | 49,79 | 12,24 |
+| diferença | **+66,7 %** | **+78,7 %** |
 
-O que **não** foi tentado, e provavelmente fecharia parte da diferença, sem
-`unsafe`: manter `ip` como iterador em vez de índice, usar `chunks_exact` para
-os operandos, e trocar `Result<_, String>` por um enum de erro sem alocação.
-Afirmar "Rust é 44 % mais lento" sem essas tentativas seria desonesto — o
-medido é **esta** implementação em Rust seguro contra **esta** em C.
+Os ~5,4 saltos extras por instrução de bytecode são os testes de limite em cada
+indexação (bytecode, pilha, array) somados ao desvio que o `?` gera após cada
+chamada auxiliar. A penalidade em ciclos (+101 %) é maior que a em instruções
+(+66,7 %) porque esses testes são **cargas dependentes** — cada um precisa ler o
+comprimento do slice da memória antes de indexar —, e o IPC cai de 3,48 para
+2,89.
+
+Uma ressalva que a medição **não** elimina: esses números valem para **esta**
+implementação em Rust seguro. Três mudanças plausíveis não foram tentadas, e
+nenhuma exige `unsafe`:
+
+- manter `ip` como iterador em vez de índice, o que elimina o teste de limite da
+  leitura de bytecode;
+- usar `chunks_exact` para os operandos;
+- trocar `Result<_, String>` por um enum de erro sem alocação.
+
+Afirmar "Rust é 44 % mais lento que C" com base nisto seria extrapolar. O medido
+é "esta implementação contra esta", e o mecanismo da diferença está identificado.
 
 Fechar o resto exigiria `get_unchecked`, isto é, `unsafe` — e aí se perde a
-propriedade pela qual se escolheu Rust. Esse é o trade-off que o projeto mede.
+propriedade pela qual se escolheu Rust. Esse é o trade-off que o projeto mede,
+agora com número de contador de hardware em vez de tempo de parede.
 
 ## Compilação e tamanho
 

@@ -22,6 +22,23 @@
 //! Rust seguro não há como ter um só sem `get_unchecked`, isto é, sem
 //! `unsafe` — e o porte inteiro não tem uma linha de `unsafe`.
 //!
+//! # O que o `perf` mostrou depois
+//!
+//! O raciocínio acima sobre contagem de instruções está certo e foi confirmado:
+//! o `boxed` executa 52,48 instruções x86 por instrução de bytecode contra
+//! 49,79 do `Vec` (+5,4 %), e mais saltos (+3,8 %). Ele realmente paga os dois
+//! testes.
+//!
+//! A conclusão sobre velocidade, porém, estava errada: o `boxed` gasta **menos
+//! ciclos** (6,586 G contra 6,730 G), porque o IPC sobe de 2,89 para 3,11. Mais
+//! instruções, executadas com mais paralelismo, saem na frente — os testes dele
+//! são independentes entre si, enquanto o do `Vec` encadeia leitura de
+//! capacidade e escrita.
+//!
+//! Resumo honesto: a vantagem de ~2–5 % do `boxed` não vem de fazer menos
+//! trabalho, vem de o trabalho ser mais paralelizável. Números em
+//! docs/BENCH.md.
+//!
 //! Este módulo mantém as duas implementações atrás da mesma interface, com o
 //! corpo do interpretador escrito uma única vez (mesma estratégia dos macros
 //! de dispatch em `c/src/vm.c`). Assim qualquer pessoa reproduz a comparação:
