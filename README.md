@@ -37,32 +37,62 @@ Três perguntas, respondidas com número e não com opinião:
 
 ## Resultado
 
-Melhor de 15–21 execuções intercaladas, i5-8250U, gcc 15.2 / rustc 1.93:
+### O resultado principal: a resposta depende da máquina
 
-| configuração | `loop` (390 M instr.) | `fib(30)` (26,9 M instr.) | `alloc` (GC) |
+A pergunta 1 era "quanto se ganha com computed goto". Medido em duas máquinas,
+com o mesmo código, o mesmo compilador e as mesmas flags:
+
+| máquina | dispersão entre execuções | computed goto no `loop` |
+|---|---|---|
+| i5-8250U (notebook, classe U, com throttling) | 120–220 % | **+11,8 %** |
+| runner `ubuntu-latest` (dedicado, ocioso) | **0,2–2,6 %** | **−10,3 %** |
+
+**O sinal se inverte.** E a medição que contradiz a folclórica é justamente a
+confiável: dispersão de 0,2 % contra 220 %.
+
+A explicação provável é o preditor de saltos indiretos. A vantagem do computed
+goto sempre foi dar ao preditor um sítio por opcode em vez de um
+compartilhado — o que valia quando os preditores eram simples (Ertl & Gregg,
+2003). Preditores modernos tipo ITTAGE acertam o `switch` quase tão bem, e o
+que sobra para o computed goto é o custo: código maior, mais pressão no cache
+de instruções. Rohou, Swamy e Seznec mediram isso em *Branch Prediction and
+the Performance of Interpreters — Don't Trust Folklore* (CGO 2015), e o título
+resume o que aconteceu aqui.
+
+Não afirmo o mecanismo — afirmo que **duas máquinas deram sinais opostos**, que
+a da máquina limpa é a que vale, e que a hipótese é compatível com a
+literatura. Separar isso exige `perf stat` contando *branch misses*, e é o
+primeiro item do roadmap.
+
+### As tabelas
+
+Runner `ubuntu-latest`, dispersão 0,2–2,6 % (a medição confiável; só C, porque
+o job do Rust foi corrigido depois — ver [Limites](#limites-conhecidos)):
+
+| configuração | `loop` | `fib(30)` | `alloc` |
 |---|---|---|---|
-| **C, computed goto** | **445,3 Mops/s** | **374,9 Mops/s** | 123,0 Mops/s |
+| C, switch | **631,5 Mops/s** | **600,9** | 236,9 |
+| C, computed goto | 566,6 | 596,9 | **243,5** |
+
+Notebook i5-8250U, melhor de 15–21 execuções intercaladas, dispersão 120–220 %
+(serve para comparar Rust × C, que são razões medidas juntas na mesma máquina):
+
+| configuração | `loop` | `fib(30)` | `alloc` |
+|---|---|---|---|
+| C, computed goto | 445,3 | 374,9 | 123,0 |
 | C, switch | 398,1 | 353,7 | 119,7 |
-| Rust, `Box<[Value]>` | 224,2 | 177,1 | **126,1 Mops/s** |
+| Rust, `Box<[Value]>` | 224,2 | 177,1 | **126,1** |
 | Rust, `Vec<Value>` | 212,9 | 165,8 | 124,1 |
 
-As três conclusões, cada uma com sua ressalva:
+**O Rust seguro custou ~44 % no dispatch** contra o `switch` do C, que é o par
+justo. A causa provável é o teste de limite que o Rust insere em cada
+indexação e a propagação de erro com `?`; *provável* porque separar as duas
+exige `perf`. Afirmar o número como definitivo seria exagerar o medido.
 
-**1. Computed goto rendeu +11,8 %** no laço apertado e +6,0 % no código com
-muita chamada. O número é confiável porque o *mínimo* de três sessões
-independentes variou 0,3 % — mesmo com a dispersão entre execuções chegando a
-220 %. A evidência dessa estabilidade está em [docs/BENCH.md](docs/BENCH.md).
-
-**2. O Rust seguro custou ~44 % no dispatch** contra o `switch` do C, que é o
-par justo (Rust estável não tem computed goto — ver abaixo). A causa provável é
-o teste de limite que o Rust insere em cada indexação e a propagação de erro
-com `?`; *provável* porque separar as duas exige `perf`, que está no roadmap.
-Afirmar o número como definitivo seria exagerar o que foi medido.
-
-**3. No benchmark dominado por alocação, a ordenação se inverte** e o Rust
-fica na frente. Não por mérito da linguagem: o ownership obrigou a usar uma
-arena de slots com lista de livres, e reciclar um índice bate `malloc`/`free`
-por objeto. O C deveria adotar a mesma estratégia — está no roadmap.
+**No benchmark dominado por alocação, a ordenação se inverte** e o Rust fica
+na frente. Não por mérito da linguagem: o ownership obrigou a usar uma arena
+de slots com lista de livres, e reciclar um índice bate `malloc`/`free` por
+objeto. O C deveria adotar a mesma estratégia — está no roadmap.
 
 E o coletor, nas duas implementações, com números idênticos:
 
@@ -197,8 +227,7 @@ Conjunto de instruções, modelo de frames e formato do `.fbc`:
 
 ### O que o Rust não tem: computed goto
 
-A variante que ganha 11,8 % em C **não é implementável em Rust estável e
-seguro**. Não há `goto`, não há como tomar o endereço de um rótulo, e o
+A variante de computed goto **não é implementável em Rust estável e seguro**. Não há `goto`, não há como tomar o endereço de um rótulo, e o
 despacho por chamada em cauda (`become`) depende de feature instável. A
 alternativa idiomática é um `match`, que o compilador transforma na mesma
 tabela de salto que o `switch` do C já usa.
@@ -207,6 +236,9 @@ Isso não é lacuna do porte, é **resultado**: quem precisa da técnica em Rust
 escreve `unsafe` com uma tabela de ponteiros de função — e aí perde a
 propriedade pela qual escolheu Rust. A comparação justa, portanto, é Rust
 `match` contra C `switch`, e é a que as tabelas reportam.
+
+E, depois da medição no runner, essa ausência importa menos do que parecia: a
+técnica que falta ao Rust é a mesma que **perde 10 %** no hardware limpo.
 
 ### O que o Rust impôs: arena em vez de ponteiros
 
@@ -305,6 +337,12 @@ vantagem que não teria nada a ver com desempenho.
 
 ## Limites conhecidos
 
+- **O job de benchmark do CI mediu só o C na primeira execução.** O
+  `run_bench.sh` pulava binários inexistentes em silêncio, então a linha do
+  Rust simplesmente não apareceu e a tabela saiu plausível com uma linha a
+  menos. O script agora falha com erro explícito, e o job imprime `ls -l` dos
+  binários e identifica a CPU. Até a próxima execução do CI, os números do
+  runner existem só para o C.
 - **Portes pendentes.** C++, Zig, Assembly (x86-64, ARM64, RISC-V), Nim, Odin,
   D, V e Ada ainda não existem. Com C e Rust prontos, o projeto já responde às
   três perguntas; os demais ampliam a comparação, não a sustentam.
@@ -339,8 +377,10 @@ vantagem que não teria nada a ver com desempenho.
 
 Em ordem de retorno esperado:
 
-1. **`perf stat`** contando ciclos e *branch misses* para separar as três
-   hipóteses sobre os 44 % do Rust, em CPU sem throttling.
+1. **`perf stat`** contando ciclos e *branch misses*, em CPU sem throttling,
+   para (a) explicar por que o computed goto inverte de sinal entre as duas
+   máquinas e (b) separar as três hipóteses sobre os 44 % do Rust. Virou o item
+   mais importante do projeto depois do resultado do runner.
 2. **Rust seguro otimizado**: `ip` como iterador, `chunks_exact`, erro sem
    alocação. Mede quanto da diferença era a linguagem e quanto era a escrita.
 3. **Arena no C também**, para isolar "arena × malloc" de "C × Rust" no
@@ -354,6 +394,15 @@ Em ordem de retorno esperado:
 
 ## Aprendizados
 
+- **Uma segunda máquina inverteu a conclusão principal.** O ganho de 11,8 % do
+  computed goto, medido com cuidado no notebook, virou perda de 10,3 % num
+  runner dedicado — e foi a máquina limpa que discordou. A lição não é "meça
+  mais", é **"um número de uma máquina só não é um resultado"**, por mais
+  caprichada que seja a metodologia.
+- **O CI mediu errado em silêncio.** O harness pulava binários ausentes sem
+  reclamar, e a tabela saiu plausível com uma linha a menos. Hoje ele falha com
+  erro. *Ferramenta de medição que degrada em silêncio é pior que ferramenta
+  quebrada.*
 - **Um segundo compilador encontrou um UB que a suíte de testes não pegou.**
   Testes verificam o que o código faz; o compilador verifica o que o código
   *significa*.
@@ -390,9 +439,10 @@ Em ordem de retorno esperado:
 | Testes unitários do Rust | ✅ 9/9 |
 | Compatibilidade cruzada de bytecode | ✅ 42/42 verificações |
 | Harness de benchmark com dispersão | ✅ |
-| CI (gcc/clang × switch/goto, MSVC, cargo) | ✅ escrito, pendente de primeiro push |
+| CI (gcc/clang × switch/goto, MSVC, cargo, cross-compat, bench) | ✅ 9/9 jobs verdes |
 | Portes C++, Zig, Assembly, Nim, Odin, D, V, Ada | ⬜ não iniciados |
-| `perf` para separar as hipóteses do gap do Rust | ⬜ pendente |
+| `perf` para explicar a inversão do goto e o gap do Rust | ⬜ pendente |
+| Benchmark do Rust no runner do CI | ⬜ job corrigido, aguardando execução |
 
 ## Licença
 

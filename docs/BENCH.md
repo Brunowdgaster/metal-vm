@@ -69,6 +69,12 @@ com carga baixa entram nas tabelas abaixo.**
 | Rust, boxed stack | 1,739665 | 224,2 | −43,7 % |
 | Rust, Vec stack | 1,832222 | 212,9 | −46,5 % |
 
+> ⚠️ **A linha do computed goto só vale para esta máquina.** Num runner
+> dedicado o sinal se inverte (−10,3 %), com dispersão de 0,2 %. Ver
+> [A medição que inverteu a conclusão](#a-medição-que-inverteu-a-conclusão-runner-do-github).
+> A comparação Rust × C, por ser uma razão entre dois binários medidos juntos
+> na mesma máquina, não é afetada por isso.
+
 ## Resultado 2: chamadas de função (`fib(30)`, 26,9 M instruções)
 
 | configuração | tempo (s) | Mops/s | relativo ao C switch |
@@ -101,7 +107,69 @@ tornou obrigatório (ver `rust/src/gc.rs`) e que nada impedia de adotar em C.
 A conclusão correta é "arena vence malloc por objeto", e o C deveria adotar a
 mesma estratégia. Está no roadmap.
 
-## Reprodução independente
+## A medição que inverteu a conclusão: runner do GitHub
+
+O primeiro CI rodou o mesmo `bench/run_bench.sh` num runner `ubuntu-latest`,
+que é uma máquina **dedicada e ociosa** — o oposto do notebook. O resultado
+desmonta o headline anterior deste arquivo:
+
+| configuração | programa | tempo (s) | Mops/s | disp_pct |
+|---|---|---|---|---|
+| C, switch | loop | 0,617553 | **631,5** | **0,2 %** |
+| C, computed goto | loop | 0,688374 | 566,6 | 2,6 % |
+| C, switch | fib | 0,044805 | 600,9 | 2,0 % |
+| C, computed goto | fib | 0,045106 | 596,9 | 2,3 % |
+| C, switch | alloc | 0,151957 | 236,9 | 1,1 % |
+| C, computed goto | alloc | 0,147816 | **243,5** | 0,9 % |
+
+**No runner, o computed goto é 10 % mais LENTO no `loop`**, empata no `fib`
+(0,7 % de diferença, dentro da dispersão) e ganha 2,8 % no `alloc`.
+
+E olhe a coluna `disp_pct`: **0,2 % a 2,6 %**, contra 120 % a 220 % no
+notebook. Esta medição é incomparavelmente mais confiável que todas as
+anteriores.
+
+### A conclusão honesta
+
+**O ganho do computed goto não é uma propriedade da técnica: depende do
+hardware.** Mesmo código, mesmo compilador, mesmas flags:
+
+| máquina | dispersão | computed goto no `loop` |
+|---|---|---|
+| i5-8250U (notebook, classe U, com throttling, carga ~1,0) | 120–220 % | **+11,8 %** |
+| runner `ubuntu-latest` (dedicado, ocioso) | 0,2–2,6 % | **−10,3 %** |
+
+A explicação provável está no preditor de saltos indiretos. A vantagem do
+computed goto sempre foi dar ao preditor um sítio por opcode em vez de um
+compartilhado. Isso valia quando os preditores eram simples — é o resultado
+clássico de Ertl & Gregg, *The Structure and Performance of Efficient
+Interpreters* (2003). Preditores modernos do tipo ITTAGE correlacionam um
+único salto indireto com um histórico longo e acertam o `switch` quase tão bem,
+e aí o custo que sobra para o computed goto — código maior, mais pressão no
+cache de instruções — passa a dominar. Rohou, Swamy e Seznec descreveram
+exatamente isso em *Branch Prediction and the Performance of Interpreters —
+Don't Trust Folklore* (CGO 2015), e o nome do artigo resume o que aconteceu
+aqui.
+
+Não afirmo que o mecanismo é esse: afirmo que **duas máquinas deram sinais
+opostos**, que a medição da máquina limpa é a confiável, e que a hipótese do
+preditor é compatível com a literatura. Separar isso exige `perf stat`
+contando *branch misses* nas duas — é o primeiro item do roadmap, agora por um
+motivo bem mais forte que antes.
+
+### O que isso ensina sobre o projeto
+
+A pergunta original era "quanto se ganha com computed goto". A resposta medida
+é "depende da CPU, e no hardware moderno pode ser negativo". Isso é mais
+valioso que um número: é a razão pela qual este arquivo reporta dispersão,
+identifica a máquina e guarda as medições descartadas em vez de publicar só a
+tabela que ficou bonita.
+
+O `README.md` foi corrigido para dizer isso. A versão anterior afirmava
+"+11,8 %" como resultado do projeto — era o resultado de **uma** máquina
+ruidosa, apresentado como se fosse geral.
+
+## Reprodução independente (no notebook)
 
 Sessão posterior, depois de `cargo fmt` e das correções do `clippy` (nenhuma
 delas no caminho quente), com `load average 1,17`:
@@ -177,9 +245,10 @@ roadmap. Listadas para que ninguém confunda hipótese com resultado:
 2. **Propagação de erro com `?`.** Cada operação devolve `Result`, e o `?`
    insere um desvio após cada chamada auxiliar. Em C, o erro é um `return`
    direto de dentro do macro.
-3. **Ausência de computed goto.** O C tem a variante que ganha 12 %; o Rust
-   seguro não tem equivalente. Comparado contra o `switch`, que é o par justo,
-   a diferença ainda é de ~44 %.
+3. **Ausência de computed goto.** O C tem essa variante; o Rust seguro não tem
+   equivalente. Mas como a variante só ganha em parte do hardware (ver acima),
+   isso deixou de ser desvantagem relevante do Rust: a comparação justa sempre
+   foi contra o `switch`, e é dela que vêm os ~44 %.
 
 O que **não** foi tentado, e provavelmente fecharia parte da diferença, sem
 `unsafe`: manter `ip` como iterador em vez de índice, usar `chunks_exact` para

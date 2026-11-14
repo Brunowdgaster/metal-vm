@@ -11,8 +11,10 @@
 //!   tabela de salto — é exatamente o que o `switch` do C já faz;
 //! - despacho por chamadas em cauda (`become`) depende de feature instável.
 //!
-//! Isso não é lacuna do porte, é **resultado da comparação**: a técnica que
-//! deu +12 % em C não está disponível em Rust seguro. Quem precisa dela em
+//! Isso não é lacuna do porte, é **resultado da comparação**: a técnica não
+//! está disponível em Rust seguro. E, medida em duas máquinas, ela ganha numa
+//! e perde na outra (docs/BENCH.md), o que torna a ausência bem menos grave
+//! do que parecia quando este comentário foi escrito. Quem precisa dela em
 //! Rust escreve `unsafe` com uma tabela de ponteiros de função, e aí perde
 //! justamente a propriedade pela qual escolheu Rust.
 //!

@@ -96,5 +96,15 @@ jobs:
           bash build.sh switch
           bash build.sh goto
           cargo build --manifest-path rust/Cargo.toml --release
+          echo "--- binarios produzidos ---"
+          ls -l build-switch/fvm build-goto/fvm rust/target/release/fvm
       - name: medir
         run: REPS=5 bash bench/run_bench.sh build-switch/fvm build-goto/fvm rust/target/release/fvm
+      - name: identificar a maquina
+        # A conclusao sobre dispatch depende do hardware (ver docs/BENCH.md):
+        # sem saber em que CPU a medicao rodou, o numero nao serve de nada.
+        run: |
+          grep -m1 "model name" /proc/cpuinfo || true
+          nproc
+          gcc --version | head -1
+          rustc --version

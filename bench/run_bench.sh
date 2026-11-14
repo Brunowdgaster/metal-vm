@@ -38,9 +38,24 @@ run_once() {   # $1 = binário, $2 = programa -> escreve tempo em REPLY
     REPLY=$t
 }
 
+# Validação na entrada. Pular um binário em silêncio é pior que falhar: a
+# tabela sai plausível, só com uma linha a menos, e ninguém nota. Foi o que
+# aconteceu no primeiro CI deste projeto — a linha do Rust simplesmente não
+# apareceu e a tabela parecia correta.
+missing=0
+for exe in "$@"; do
+    if [ ! -x "$exe" ]; then
+        echo "run_bench: ERRO: '$exe' nao existe ou nao e executavel" >&2
+        missing=$((missing + 1))
+    fi
+done
+if [ "$missing" -gt 0 ]; then
+    echo "run_bench: $missing binario(s) invalido(s); nada foi medido" >&2
+    exit 2
+fi
+
 # aquecimento (descartado)
 for exe in "$@"; do
-    [ -x "$exe" ] || continue
     for prog in $PROGS; do run_once "$exe" "$prog"; done
 done
 
@@ -48,7 +63,6 @@ done
 for _ in $(seq "$REPS"); do
     for prog in $PROGS; do
         for exe in "$@"; do
-            [ -x "$exe" ] || continue
             run_once "$exe" "$prog"
             t=$REPLY
             key="$exe|$prog"
@@ -67,7 +81,6 @@ done
 printf '| %-26s | %-6s | %10s | %13s | %9s | %7s |\n' binario programa tempo_s instrucoes Mops/s disp_pct
 printf '|%s|%s|%s|%s|%s|%s|\n' "----------------------------" "--------" "------------" "---------------" "-----------" "---------"
 for exe in "$@"; do
-    [ -x "$exe" ] || continue
     # Rótulo: o nome do binário, quando ele é distintivo; o diretório pai,
     # quando o binário se chama apenas "fvm" (caso dos builds do CMake).
     label=$(basename "$exe")
