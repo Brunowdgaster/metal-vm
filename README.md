@@ -54,7 +54,7 @@ foi deliberadamente igualado:
   verificado em toda execução, e é o que permite comparar *throughput* em vez
   de tempo bruto.
 - **O bytecode.** As duas VMs leem o mesmo `.fbc`, e os dois montadores emitem
-  bytes idênticos — 42/42 verificações. Sem isso, uma diferença de desempenho
+  bytes idênticos — 54/54 verificações. Sem isso, uma diferença de desempenho
   poderia ser apenas um montador gerando código melhor que o outro.
 - **A contabilidade de memória.** O GC em Rust calcula bytes com a fórmula do
   layout C, e não com o `size_of` real das structs Rust, para que as duas
