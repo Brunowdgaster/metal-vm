@@ -1,0 +1,21 @@
+; funcao com argumentos e local extra via RESERVE
+.entry main
+main:
+  PUSH 7
+  PUSH 6
+  CALL soma_quadrados 2
+  PRINT             ; 85
+  HALT
+
+soma_quadrados:     ; slot0 = a, slot1 = b, slot2 = tmp
+  RESERVE 1
+  LOAD 0
+  LOAD 0
+  MUL
+  STORE 2
+  LOAD 2
+  LOAD 1
+  LOAD 1
+  MUL
+  ADD
+  RET

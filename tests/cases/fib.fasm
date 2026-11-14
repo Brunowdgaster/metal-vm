@@ -1,0 +1,26 @@
+; fibonacci recursivo: exercita CALL/RET e a pilha de frames
+.entry main
+main:
+  PUSH 20
+  CALL fib 1
+  PRINT             ; 6765
+  HALT
+
+fib:                ; slot0 = n
+  LOAD 0
+  PUSH 2
+  LT
+  JZ rec
+  LOAD 0
+  RET
+rec:
+  LOAD 0
+  PUSH 1
+  SUB
+  CALL fib 1
+  LOAD 0
+  PUSH 2
+  SUB
+  CALL fib 1
+  ADD
+  RET

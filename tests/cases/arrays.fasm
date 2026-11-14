@@ -1,0 +1,36 @@
+; objetos no heap: criacao, escrita, leitura e tamanho
+.entry main
+main:
+  RESERVE 2         ; slot0 = arr, slot1 = i
+  PUSH 5
+  NEWARR
+  STORE 0
+  PUSH 0
+  STORE 1
+fill:
+  LOAD 1
+  PUSH 5
+  GE
+  JNZ done
+  LOAD 0
+  LOAD 1
+  LOAD 1
+  LOAD 1
+  MUL
+  ASET
+  LOAD 1
+  PUSH 1
+  ADD
+  STORE 1
+  JMP fill
+done:
+  LOAD 0
+  PRINT             ; [0, 1, 4, 9, 16]
+  LOAD 0
+  ALEN
+  PRINT             ; 5
+  LOAD 0
+  PUSH 3
+  AGET
+  PRINT             ; 9
+  HALT

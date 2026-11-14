@@ -1,0 +1,25 @@
+; pressao de memoria: 20000 arrays descartados imediatamente.
+; o coletor tem de reciclar tudo sem o processo crescer.
+.entry main
+main:
+  RESERVE 1         ; slot0 = i
+  PUSH 0
+  STORE 0
+loop:
+  LOAD 0
+  PUSH 20000
+  GE
+  JNZ done
+  PUSH 8
+  NEWARR
+  POP               ; lixo imediato
+  LOAD 0
+  PUSH 1
+  ADD
+  STORE 0
+  JMP loop
+done:
+  GC
+  PUSH 42
+  PRINT             ; 42
+  HALT

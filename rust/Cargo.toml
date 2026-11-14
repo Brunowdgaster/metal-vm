@@ -1,0 +1,32 @@
+[package]
+name = "fvm"
+version = "0.1.0"
+edition = "2021"
+description = "Forge VM — porte em Rust da implementacao de referencia em C"
+license = "MIT"
+
+# `stats` espelha a opcao FVM_STATS do CMake: contagem de instrucoes
+# compilada condicionalmente, para medir o custo da propria instrumentacao.
+#   cargo build --release                        -> com contadores
+#   cargo build --release --no-default-features   -> sem contadores
+[features]
+default = ["stats"]
+stats = []
+# Troca a pilha de operandos de Vec<Value> para Box<[Value]> + sp explicito.
+# Existe para que a comparacao entre as duas seja reproduzivel na mesma
+# maquina e na mesma sessao. Ver rust/src/stack.rs e docs/BENCH.md.
+boxed-stack = []
+
+[[bin]]
+name = "fvm"
+path = "src/main.rs"
+
+# Sem dependencias. A biblioteca padrao basta, e um projeto cujo objetivo e
+# comparar linguagens nao deve medir a qualidade das crates de terceiros.
+
+[profile.release]
+opt-level = 3
+# lto e codegen-units ficam no padrao do cargo (lto=false, codegen-units=16).
+# O build em C tambem nao usa LTO e compila uma unidade de traducao por
+# arquivo, entao as duas configuracoes sao comparaveis. Ligar LTO aqui daria
+# vantagem artificial ao Rust: esta anotado em docs/BENCH.md.

@@ -1,0 +1,27 @@
+; fib(30) = 832040 -- dominado por CALL/RET e salto condicional.
+; Mede o custo do dispatch em codigo com muita chamada.
+.entry main
+main:
+  PUSH 30
+  CALL fib 1
+  PRINT
+  HALT
+
+fib:
+  LOAD 0
+  PUSH 2
+  LT
+  JZ rec
+  LOAD 0
+  RET
+rec:
+  LOAD 0
+  PUSH 1
+  SUB
+  CALL fib 1
+  LOAD 0
+  PUSH 2
+  SUB
+  CALL fib 1
+  ADD
+  RET

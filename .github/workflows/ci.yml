@@ -1,0 +1,100 @@
+name: ci
+
+# O CI roda a MESMA suíte em 4 combinações de compilador/dispatch em C, mais
+# as 2 variantes de pilha em Rust, mais a compatibilidade cruzada de bytecode.
+# Não é excesso: o bug de ponto de sequência em PUSH (ver README > Decisões)
+# só apareceu no gcc; o MSVC compilou calado. Dois compiladores independentes
+# são duas revisões de código de graça.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  c-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { cc: gcc,   goto: 'OFF' }
+          - { cc: gcc,   goto: 'ON'  }
+          - { cc: clang, goto: 'OFF' }
+          - { cc: clang, goto: 'ON'  }
+    name: c ${{ matrix.cc }} goto=${{ matrix.goto }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: configurar
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DFVM_USE_GOTO=${{ matrix.goto }}
+      - name: compilar
+        run: cmake --build build -j
+      - name: testes
+        run: bash tests/run_tests.sh build/fvm
+
+  c-windows:
+    runs-on: windows-latest
+    name: c msvc switch
+    steps:
+      - uses: actions/checkout@v4
+      - name: configurar e compilar
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+      - name: testes
+        shell: pwsh
+        run: ./tests/run_tests.ps1 -Exe ./build/Release/fvm.exe
+
+  rust:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ['', 'boxed-stack']
+    name: rust stack=${{ matrix.features == '' && 'vec' || matrix.features }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: formatação
+        run: cargo fmt --manifest-path rust/Cargo.toml --check
+      - name: clippy (avisos são erro)
+        run: cargo clippy --manifest-path rust/Cargo.toml --release --features "${{ matrix.features }}" -- -D warnings
+      - name: testes unitários
+        run: cargo test --manifest-path rust/Cargo.toml --release --features "${{ matrix.features }}"
+      - name: suíte .fasm
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --features "${{ matrix.features }}"
+          bash tests/run_tests.sh rust/target/release/fvm
+
+  # O teste que só existe porque há duas implementações: as duas têm de emitir
+  # bytecode byte a byte idêntico e executar o arquivo uma da outra.
+  cross-compat:
+    runs-on: ubuntu-latest
+    needs: [c-linux, rust]
+    name: compatibilidade C <-> Rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: compilar as duas
+        run: |
+          bash build.sh switch
+          cargo build --manifest-path rust/Cargo.toml --release
+      - name: cross-compat
+        run: bash tests/cross_compat.sh build-switch/fvm rust/target/release/fvm
+
+  # Mede, mas NÃO falha o build por regressão de performance: a variância em
+  # runner compartilhado é grande demais para servir de gate (ver docs/BENCH.md).
+  bench:
+    runs-on: ubuntu-latest
+    needs: [c-linux, rust]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: compilar tudo
+        run: |
+          bash build.sh switch
+          bash build.sh goto
+          cargo build --manifest-path rust/Cargo.toml --release
+      - name: medir
+        run: REPS=5 bash bench/run_bench.sh build-switch/fvm build-goto/fvm rust/target/release/fvm

@@ -1,0 +1,22 @@
+# artefatos de build
+build/
+build-*/
+*.obj
+*.o
+*.exe
+*.pdb
+*.ilk
+*.fbc
+
+# cmake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# editores
+.vscode/
+.idea/
+*.swp
+binaries/
+rust/target*/

@@ -1,0 +1,24 @@
+; 3_000_000 arrays de 8 posicoes, todos lixo imediato.
+; Mede o custo do GC: alocacao + marcacao + varredura.
+.entry main
+main:
+  RESERVE 1
+  PUSH 0
+  STORE 0
+loop:
+  LOAD 0
+  PUSH 3000000
+  GE
+  JNZ done
+  PUSH 8
+  NEWARR
+  POP
+  LOAD 0
+  PUSH 1
+  ADD
+  STORE 0
+  JMP loop
+done:
+  LOAD 0
+  PRINT
+  HALT

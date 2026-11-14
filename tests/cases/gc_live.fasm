@@ -1,0 +1,33 @@
+; o oposto do gc.fasm: os arrays ficam VIVOS dentro de outro array,
+; entao nenhuma coleta pode reciclar algo ainda alcancavel.
+.entry main
+main:
+  RESERVE 2         ; slot0 = raiz, slot1 = i
+  PUSH 100
+  NEWARR
+  STORE 0
+  PUSH 0
+  STORE 1
+fill:
+  LOAD 1
+  PUSH 100
+  GE
+  JNZ done
+  LOAD 0
+  LOAD 1
+  PUSH 4
+  NEWARR
+  ASET
+  LOAD 1
+  PUSH 1
+  ADD
+  STORE 1
+  JMP fill
+done:
+  GC
+  LOAD 0
+  PUSH 99
+  AGET
+  ALEN
+  PRINT             ; 4  (sobreviveu a coleta)
+  HALT

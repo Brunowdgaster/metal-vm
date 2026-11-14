@@ -1,0 +1,27 @@
+; soma 1..30_000_000 -- loop apertado, 8 instrucoes por iteracao.
+; Mede o custo do dispatch no melhor caso para o preditor de saltos.
+.entry main
+main:
+  RESERVE 2
+  PUSH 1
+  STORE 0
+  PUSH 0
+  STORE 1
+loop:
+  LOAD 0
+  PUSH 30000000
+  GT
+  JNZ fim
+  LOAD 1
+  LOAD 0
+  ADD
+  STORE 1
+  LOAD 0
+  PUSH 1
+  ADD
+  STORE 0
+  JMP loop
+fim:
+  LOAD 1
+  PRINT
+  HALT

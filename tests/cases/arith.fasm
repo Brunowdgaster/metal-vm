@@ -1,0 +1,41 @@
+; aritmetica e comparacao basicas
+.entry main
+main:
+  PUSH 2
+  PUSH 3
+  ADD
+  PRINT         ; 5
+  PUSH 10
+  PUSH 4
+  SUB
+  PRINT         ; 6
+  PUSH 6
+  PUSH 7
+  MUL
+  PRINT         ; 42
+  PUSH 20
+  PUSH 6
+  DIV
+  PRINT         ; 3
+  PUSH 20
+  PUSH 6
+  MOD
+  PRINT         ; 2
+  PUSH 5
+  NEG
+  PRINT         ; -5
+  PUSH 1
+  PUSH 2
+  LT
+  PRINT         ; 1
+  PUSH 1
+  PUSH 2
+  GT
+  PRINT         ; 0
+  PUSH 7
+  PUSH 7
+  EQ
+  PRINT         ; 1
+  PUSH 0x10
+  PRINT         ; 16  (hexadecimal)
+  HALT

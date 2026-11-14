@@ -1,0 +1,15 @@
+# Normaliza tudo para LF no repositorio e no checkout.
+#
+# Nao e preferencia de estilo: um script .sh com CRLF falha no Linux com
+# "bad interpreter: /usr/bin/env bash^M", e o CI deste projeto roda bash em
+# ubuntu-latest. Sem este arquivo, clonar no Windows e deixar o git converter
+# para CRLF quebraria build.sh, run_tests.sh, cross_compat.sh e run_bench.sh.
+* text=auto eol=lf
+
+# PowerShell e lote ficam com CRLF, que e a convencao no Windows.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Bytecode da VM e binario: nunca converter.
+*.fbc binary
