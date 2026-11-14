@@ -69,9 +69,9 @@ com carga baixa entram nas tabelas abaixo.**
 | Rust, boxed stack | 1,739665 | 224,2 | −43,7 % |
 | Rust, Vec stack | 1,832222 | 212,9 | −46,5 % |
 
-> ⚠️ **A linha do computed goto só vale para esta máquina.** Num runner
-> dedicado o sinal se inverte (−10,3 %), com dispersão de 0,2 %. Ver
-> [A medição que inverteu a conclusão](#a-medição-que-inverteu-a-conclusão-runner-do-github).
+> ⚠️ **A linha do computed goto só vale para esta máquina.** Em outras duas o
+> resultado foi −10,3 % e +3,1 %: o sinal muda com a CPU. Ver
+> [As medições no CI](#as-medições-no-ci-e-o-que-elas-fizeram-com-a-conclusão).
 > A comparação Rust × C, por ser uma razão entre dois binários medidos juntos
 > na mesma máquina, não é afetada por isso.
 
@@ -88,86 +88,125 @@ com carga baixa entram nas tabelas abaixo.**
 
 | configuração | tempo (s) | Mops/s | relativo ao C switch |
 |---|---|---|---|
-| Rust, boxed stack | 0,285437 | **126,1** | +5,3 % |
+| Rust, boxed stack | 0,285437 | 126,1 | +5,3 % |
 | Rust, Vec stack | 0,290089 | 124,1 | +3,7 % |
 | C, computed goto | 0,292738 | 123,0 | +2,8 % |
 | C, switch | 0,300645 | 119,7 | — |
 
-**A ordenação se inverte.** Quando a carga é dominada por alocação, as quatro
-configurações ficam dentro de 5 % e o Rust fica na frente.
+Aqui a desvantagem do Rust no dispatch desaparece: as quatro configurações
+ficam dentro de 5 %.
 
-A explicação é estrutural: a versão em C faz `malloc` e `free` por objeto; a
-versão em Rust mantém uma arena de slots com lista de livres, então reciclar
-um objeto é um `pop` num `Vec<usize>`. Com 1.831 coletas e 3 M de objetos, a
-diferença entre "chamar o alocador do sistema" e "reaproveitar um índice"
-compensa inteiramente a desvantagem do Rust no dispatch.
+A explicação estrutural é que a versão em C faz `malloc` e `free` por objeto,
+enquanto a versão em Rust mantém uma arena de slots com lista de livres —
+reciclar um objeto é um `pop` num `Vec<usize>`. Com 1.831 coletas e 3 M de
+objetos, a diferença entre "chamar o alocador do sistema" e "reaproveitar um
+índice" compensa o que o Rust perde no dispatch.
 
-Isso **não** é mérito da linguagem: é mérito do design de arena — que o Rust
-tornou obrigatório (ver `rust/src/gc.rs`) e que nada impedia de adotar em C.
-A conclusão correta é "arena vence malloc por objeto", e o C deveria adotar a
-mesma estratégia. Está no roadmap.
+> ⚠️ **Corrigido depois:** a versão anterior desta seção afirmava que o Rust
+> "fica na frente". No runner #2 ele ficou 4,3 % **atrás** (143,7 contra
+> 150,2 Mops/s). Com as duas máquinas, a conclusão defensável é **empate dentro
+> de ±5 %**: a arena iguala `malloc`/`free` por objeto, não o supera. O ponto de
+> engenharia permanece — a arena compensa inteiramente a desvantagem de 41 % que
+> o Rust tem no dispatch no mesmo hardware.
 
-## A medição que inverteu a conclusão: runner do GitHub
+## As medições no CI, e o que elas fizeram com a conclusão
 
-O primeiro CI rodou o mesmo `bench/run_bench.sh` num runner `ubuntu-latest`,
-que é uma máquina **dedicada e ociosa** — o oposto do notebook. O resultado
-desmonta o headline anterior deste arquivo:
+O CI roda o mesmo `bench/run_bench.sh` em runners `ubuntu-latest`. Duas
+execuções, e **duas CPUs diferentes** — o GitHub não garante modelo de
+máquina:
 
-| configuração | programa | tempo (s) | Mops/s | disp_pct |
+### Runner #1 (CPU não identificada)
+
+A execução anterior ao passo de identificação de máquina, que só existe a
+partir do segundo commit. Dispersão de 0,2 % a 2,6 %.
+
+| configuração | programa | tempo (s) | Mops/s |
+|---|---|---|---|
+| C, switch | loop | 0,617553 | **631,5** |
+| C, computed goto | loop | 0,688374 | 566,6 |
+| C, switch | fib | 0,044805 | 600,9 |
+| C, computed goto | fib | 0,045106 | 596,9 |
+| C, switch | alloc | 0,151957 | 236,9 |
+| C, computed goto | alloc | 0,147816 | **243,5** |
+
+Só C: nesta execução o harness pulou o binário do Rust **em silêncio**, porque
+`[ -x "$exe" ] || continue` escondia a ausência. A tabela saiu plausível com
+uma linha a menos. Corrigido — hoje o script falha com exit 2 e mensagem
+explícita, e o job imprime `ls -l` dos binários.
+
+### Runner #2 (AMD EPYC 9V74 80-Core, 4 vCPU, gcc 13.3, rustc 1.100)
+
+Dispersão de 0,5 % a 9,9 %.
+
+| configuração | programa | tempo (s) | Mops/s |
+|---|---|---|---|
+| C, switch | loop | 0,949686 | 410,7 |
+| C, computed goto | loop | 0,921202 | **423,4** |
+| C, switch | fib | 0,067331 | 399,9 |
+| C, computed goto | fib | 0,063358 | **425,0** |
+| C, switch | alloc | 0,239659 | 150,2 |
+| C, computed goto | alloc | 0,230384 | **156,3** |
+| Rust, Vec | loop | 1,605792 | 242,9 |
+| Rust, Vec | fib | 0,123437 | 218,1 |
+| Rust, Vec | alloc | 0,250576 | 143,7 |
+
+### Runner compartilhado não é linha de base
+
+Os dois runners executaram **binários idênticos** e deram 631,5 e 410,7 Mops/s
+no `loop`: **54 % de diferença**. A dispersão *dentro* de cada execução é
+excelente (0,2 % e 0,5 %), mas *entre* execuções não existe comparabilidade,
+porque o modelo de CPU muda.
+
+Consequência prática: o job de benchmark do CI serve para detectar que o
+harness ainda roda, não para comparar commits. É por isso que ele mede e
+**não** falha por regressão. Quem quiser comparar duas versões tem de rodar as
+duas na mesma máquina, na mesma sessão — o que o `run_bench.sh` já força, por
+receber vários binários e intercalar as execuções.
+
+### Consolidado das três máquinas
+
+Ganho do computed goto sobre o `switch`, mesma origem de código:
+
+| programa | i5-8250U | runner #1 | runner #2 | reproduz? |
 |---|---|---|---|---|
-| C, switch | loop | 0,617553 | **631,5** | **0,2 %** |
-| C, computed goto | loop | 0,688374 | 566,6 | 2,6 % |
-| C, switch | fib | 0,044805 | 600,9 | 2,0 % |
-| C, computed goto | fib | 0,045106 | 596,9 | 2,3 % |
-| C, switch | alloc | 0,151957 | 236,9 | 1,1 % |
-| C, computed goto | alloc | 0,147816 | **243,5** | 0,9 % |
+| `loop` | **+11,8 %** | **−10,3 %** | **+3,1 %** | ❌ o sinal muda |
+| `fib(30)` | +6,0 % | −0,7 % | +6,3 % | 🟡 positivo em 2 de 3 |
+| `alloc` | +2,8 % | +2,8 % | +4,1 % | ✅ +3–4 % nas três |
 
-**No runner, o computed goto é 10 % mais LENTO no `loop`**, empata no `fib`
-(0,7 % de diferença, dentro da dispersão) e ganha 2,8 % no `alloc`.
+Rust seguro contra o `switch` do C, na mesma máquina:
 
-E olhe a coluna `disp_pct`: **0,2 % a 2,6 %**, contra 120 % a 220 % no
-notebook. Esta medição é incomparavelmente mais confiável que todas as
-anteriores.
+| programa | i5-8250U | runner #2 | reproduz? |
+|---|---|---|---|
+| `loop` | −46,5 % | −40,9 % | ✅ 41–47 % |
+| `fib(30)` | −53,1 % | −45,5 % | ✅ 45–53 % |
+| `alloc` | +3,7 % | −4,3 % | ❌ empate, ±5 % |
 
-### A conclusão honesta
+**O que o projeto pode afirmar:**
 
-**O ganho do computed goto não é uma propriedade da técnica: depende do
-hardware.** Mesmo código, mesmo compilador, mesmas flags:
+1. O custo do Rust seguro no dispatch é de 41–47 %, e em código com muita
+   chamada 45–53 %. Dois hardwares, mesma ordem de grandeza.
+2. O computed goto rende 3–4 % quando a carga é dominada por alocação.
+3. **No laço apertado, o efeito do computed goto não está determinado.** Varia
+   de −10 % a +12 % conforme a CPU.
+4. A arena com handles do Rust **empata** com `malloc`/`free` por objeto; a
+   afirmação anterior de que ganhava valia para uma máquina só.
 
-| máquina | dispersão | computed goto no `loop` |
+**O que não pode:** publicar um número único para o ganho do computed goto. A
+pergunta original do projeto — "quanto se ganha?" — tem como resposta medida
+"depende da CPU, e menos do que o folclore diz".
+
+### Histórico das conclusões
+
+| versão | base | conclusão sobre o `loop` |
 |---|---|---|
-| i5-8250U (notebook, classe U, com throttling, carga ~1,0) | 120–220 % | **+11,8 %** |
-| runner `ubuntu-latest` (dedicado, ocioso) | 0,2–2,6 % | **−10,3 %** |
+| v1 | i5-8250U, 3 sessões | +11,8 %, "confiável porque o mínimo variou 0,3 %" |
+| v2 | + runner #1 | −10,3 %, "e esta é a medição confiável" |
+| v3 | + runner #2 | **não determinado**, −10 % a +12 % |
 
-A explicação provável está no preditor de saltos indiretos. A vantagem do
-computed goto sempre foi dar ao preditor um sítio por opcode em vez de um
-compartilhado. Isso valia quando os preditores eram simples — é o resultado
-clássico de Ertl & Gregg, *The Structure and Performance of Efficient
-Interpreters* (2003). Preditores modernos do tipo ITTAGE correlacionam um
-único salto indireto com um histórico longo e acertam o `switch` quase tão bem,
-e aí o custo que sobra para o computed goto — código maior, mais pressão no
-cache de instruções — passa a dominar. Rohou, Swamy e Seznec descreveram
-exatamente isso em *Branch Prediction and the Performance of Interpreters —
-Don't Trust Folklore* (CGO 2015), e o nome do artigo resume o que aconteceu
-aqui.
-
-Não afirmo que o mecanismo é esse: afirmo que **duas máquinas deram sinais
-opostos**, que a medição da máquina limpa é a confiável, e que a hipótese do
-preditor é compatível com a literatura. Separar isso exige `perf stat`
-contando *branch misses* nas duas — é o primeiro item do roadmap, agora por um
-motivo bem mais forte que antes.
-
-### O que isso ensina sobre o projeto
-
-A pergunta original era "quanto se ganha com computed goto". A resposta medida
-é "depende da CPU, e no hardware moderno pode ser negativo". Isso é mais
-valioso que um número: é a razão pela qual este arquivo reporta dispersão,
-identifica a máquina e guarda as medições descartadas em vez de publicar só a
-tabela que ficou bonita.
-
-O `README.md` foi corrigido para dizer isso. A versão anterior afirmava
-"+11,8 %" como resultado do projeto — era o resultado de **uma** máquina
-ruidosa, apresentado como se fosse geral.
+As três estão no `git log`. Nenhuma correção veio de mudança de opinião: cada
+uma veio de uma máquina nova. O erro da v1 não foi a medição — foi apresentar
+uma máquina como se fosse o mundo. O da v2 foi repetir o mesmo erro com uma
+máquina mais limpa.
 
 ## Reprodução independente (no notebook)
 
