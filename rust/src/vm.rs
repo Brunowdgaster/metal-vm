@@ -443,6 +443,59 @@ impl Vm {
                     self.heap.collect(self.stack.live());
                 }
 
+                // Chamada indireta: o destino vem de DADOS, não do código.
+                // Por isso cada validação abaixo existe — um .fbc mal gerado
+                // faria a VM saltar para um endereço arbitrário, e "mal
+                // gerado" inclui o caso normal de um compilador em
+                // desenvolvimento, que é exatamente o uso previsto.
+                //
+                // Pilha na entrada: [... closure arg1 .. argN]
+                // Frame: base = sp - N - 1, slot 0 = closure, 1..N = args.
+                // A closure NÃO é desempilhada: fica como slot 0, e as
+                // capturas saem de LOAD 0 + PUSH i + AGET.
+                OP_CALLI => {
+                    let nargs = rd_u8(code, &mut ip)? as usize;
+                    if self.stack.len() < nargs + 1 {
+                        return Err(err(ip, "CALLI sem closure e argumentos suficientes"));
+                    }
+                    let newbase = self.stack.len() - nargs - 1;
+                    let cv = self
+                        .stack
+                        .get(newbase)
+                        .ok_or_else(|| err(ip, "CALLI: pilha inconsistente"))?;
+                    let id = match cv {
+                        Value::Obj(id) => id,
+                        Value::Int(_) => {
+                            return Err(err(ip, "CALLI: o valor chamado nao e uma closure"))
+                        }
+                    };
+                    let target = match self.heap.get(id) {
+                        None => return Err(err(ip, "CALLI: closure ja liberada")),
+                        Some(arr) => match arr.items.first() {
+                            Some(Value::Int(t)) => *t,
+                            _ => {
+                                return Err(err(
+                                    ip,
+                                    "CALLI: closure sem endereco de codigo no item 0",
+                                ))
+                            }
+                        },
+                    };
+                    if target < 0 || target as usize >= code.len() {
+                        return Err(err(ip, "CALLI: endereco de codigo fora do programa"));
+                    }
+                    if self.fp >= FRAMES_MAX {
+                        return Err(err(ip, "estouro da pilha de chamadas"));
+                    }
+                    self.frames[self.fp] = Frame {
+                        ret_ip: ip,
+                        base: newbase,
+                    };
+                    self.fp += 1;
+                    base = newbase;
+                    ip = target as usize;
+                }
+
                 other => return Err(err(ip, &format!("opcode invalido: {other}"))),
             }
         }

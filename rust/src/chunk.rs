@@ -38,7 +38,10 @@ pub const OP_AGET: u8 = 27;
 pub const OP_ASET: u8 = 28;
 pub const OP_ALEN: u8 = 29;
 pub const OP_GC: u8 = 30;
-pub const OP_COUNT: usize = 31;
+/// Chamada indireta via closure. Acrescentado no FIM dos opcodes, de modo que
+/// todo `.fbc` anterior continua valido byte a byte.
+pub const OP_CALLI: u8 = 31;
+pub const OP_COUNT: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OperandKind {
@@ -47,6 +50,8 @@ pub enum OperandKind {
     Label,
     Slot,
     Call,
+    /// Apenas `nargs: u8` — usado por `CALLI`.
+    Nargs,
 }
 
 pub struct OpInfo {
@@ -214,6 +219,11 @@ pub const OPS: [OpInfo; OP_COUNT] = [
         op: OP_GC,
         kind: OperandKind::None,
     },
+    OpInfo {
+        name: "CALLI",
+        op: OP_CALLI,
+        kind: OperandKind::Nargs,
+    },
 ];
 
 pub fn op_info(op: u8) -> Option<&'static OpInfo> {
@@ -256,6 +266,13 @@ impl Chunk {
     /// Corrige um operando de 4 bytes já emitido (resolução de rótulo).
     pub fn patch_i32(&mut self, at: usize, v: i32) {
         self.code[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    /// Corrige um operando de 8 bytes: `PUSH <rotulo>` empurra o endereço do
+    /// rótulo como inteiro, que é o que permite construir uma closure sem
+    /// nenhuma instrução nova na VM.
+    pub fn patch_i64(&mut self, at: usize, v: i64) {
+        self.code[at..at + 8].copy_from_slice(&v.to_le_bytes());
     }
 
     /// `"FVM1" | u32 entry | u32 len | code[len]`, igual à implementação em C.

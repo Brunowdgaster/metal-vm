@@ -169,6 +169,7 @@ VMResult vm_run(VM *vm, Chunk *chunk)
         &&L_OP_LOAD, &&L_OP_STORE, &&L_OP_RESERVE,
         &&L_OP_CALL, &&L_OP_RET, &&L_OP_PRINT,
         &&L_OP_NEWARR, &&L_OP_AGET, &&L_OP_ASET, &&L_OP_ALEN, &&L_OP_GC,
+        &&L_OP_CALLI,
     };
 #endif
 
@@ -386,6 +387,38 @@ VMResult vm_run(VM *vm, Chunk *chunk)
     VM_CASE(OP_GC)
         gc_collect(vm);
         VM_NEXT();
+
+    /* Chamada indireta: o destino vem de dados, não do código. Por isso todas
+     * as validações abaixo existem — um .fbc mal gerado faria a VM saltar para
+     * um endereço arbitrário, e "mal gerado" inclui o caso normal de um
+     * compilador em desenvolvimento, que foi exatamente o uso previsto. */
+    VM_CASE(OP_CALLI) {
+        uint8_t nargs = READ_U8();
+        if (vm->sp < (int)nargs + 1)
+            return vm_err(vm, ip, "CALLI sem closure e argumentos suficientes");
+
+        int newbase = vm->sp - (int)nargs - 1;
+        Value cv = vm->stack[newbase];
+        if (!IS_OBJ(cv) || AS_OBJ(cv)->type != OBJ_ARRAY)
+            return vm_err(vm, ip, "CALLI: o valor chamado nao e uma closure");
+
+        ObjArray *clo = (ObjArray *)AS_OBJ(cv);
+        if (clo->len < 1 || !IS_INT(clo->items[0]))
+            return vm_err(vm, ip, "CALLI: closure sem endereco de codigo no item 0");
+
+        int64_t target = AS_INT(clo->items[0]);
+        if (target < 0 || (size_t)target >= chunk->len)
+            return vm_err(vm, ip, "CALLI: endereco de codigo fora do programa");
+        if (vm->fp >= FVM_FRAMES_MAX)
+            return vm_err(vm, ip, "estouro da pilha de chamadas");
+
+        vm->frames[vm->fp].ret_ip = ip;
+        vm->frames[vm->fp].base = newbase;
+        vm->fp++;
+        base = newbase;            /* slot 0 = closure, 1..nargs = argumentos */
+        ip = chunk->code + (size_t)target;
+        VM_NEXT();
+    }
 
     VM_END
 

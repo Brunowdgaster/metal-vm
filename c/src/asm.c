@@ -33,6 +33,7 @@ typedef struct {
     size_t offset;              /* posição no chunk a ser corrigida */
     char   name[MAX_NAME];
     int    line;
+    int    width;               /* 4 para saltos e CALL, 8 para PUSH */
 } Patch;
 
 typedef struct {
@@ -85,11 +86,12 @@ static void sym_define(Asm *a, const char *name, uint32_t addr)
     a->nsyms++;
 }
 
-static void patch_add(Asm *a, size_t offset, const char *name)
+static void patch_add(Asm *a, size_t offset, const char *name, int width)
 {
     if (a->npats == a->cpats) a->pats = (Patch *)grow(a->pats, &a->cpats, sizeof(Patch));
     a->pats[a->npats].offset = offset;
     a->pats[a->npats].line = a->line;
+    a->pats[a->npats].width = width;
     copy_name(a->pats[a->npats].name, name);
     a->npats++;
 }
@@ -191,13 +193,24 @@ int fvm_assemble(const char *source, const char *filename, Chunk *out)
             case OPD_I64: {
                 const char *r = next_token(q, tok, sizeof tok);
                 int64_t v = 0;
-                if (!r || !parse_int(tok, &v)) {
-                    as_error(&a, "%s exige um inteiro", info->name);
-                    v = 0;
-                } else {
-                    q = r;
+                if (!r) {
+                    as_error(&a, "%s exige um inteiro ou rotulo", info->name);
+                    chunk_write_i64(out, 0);
+                    break;
                 }
-                chunk_write_i64(out, v);
+                q = r;
+                if (parse_int(tok, &v)) {
+                    chunk_write_i64(out, v);
+                } else {
+                    /* PUSH <rotulo> empurra o ENDEREÇO do rótulo como inteiro.
+                     * É o que permite construir uma closure — um array cujo
+                     * item 0 é o endereço do código — sem nenhuma instrução
+                     * nova: o endereço é só um imediato que o montador
+                     * resolve. Sem isso, escrever um teste de CALLI à mão
+                     * exigiria contar offsets de bytes na unha. */
+                    patch_add(&a, out->len, tok, 8);
+                    chunk_write_i64(out, 0);
+                }
                 break;
             }
 
@@ -226,9 +239,22 @@ int fvm_assemble(const char *source, const char *filename, Chunk *out)
                 if (parse_int(tok, &imm)) {      /* endereço literal também vale */
                     chunk_write_i32(out, (int32_t)imm);
                 } else {
-                    patch_add(&a, out->len, tok);
+                    patch_add(&a, out->len, tok, 4);
                     chunk_write_i32(out, 0);
                 }
+                break;
+            }
+
+            case OPD_NARGS: {
+                const char *r = next_token(q, tok, sizeof tok);
+                int64_t n = 0;
+                if (!r || !parse_int(tok, &n) || n < 0 || n > 255) {
+                    as_error(&a, "%s exige nargs entre 0 e 255", info->name);
+                    n = 0;
+                } else {
+                    q = r;
+                }
+                chunk_write_u8(out, (uint8_t)n);
                 break;
             }
 
@@ -245,7 +271,7 @@ int fvm_assemble(const char *source, const char *filename, Chunk *out)
                 if (parse_int(tok, &imm)) {
                     chunk_write_i32(out, (int32_t)imm);
                 } else {
-                    patch_add(&a, out->len, tok);
+                    patch_add(&a, out->len, tok, 4);
                     chunk_write_i32(out, 0);
                 }
                 r = next_token(q, tok, sizeof tok);
@@ -268,8 +294,13 @@ int fvm_assemble(const char *source, const char *filename, Chunk *out)
         int found = 0;
         for (size_t j = 0; j < a.nsyms; j++) {
             if (strcmp(a.pats[i].name, a.syms[j].name) == 0) {
-                int32_t addr = (int32_t)a.syms[j].addr;
-                memcpy(out->code + a.pats[i].offset, &addr, 4);
+                if (a.pats[i].width == 8) {
+                    int64_t addr64 = (int64_t)a.syms[j].addr;
+                    memcpy(out->code + a.pats[i].offset, &addr64, 8);
+                } else {
+                    int32_t addr = (int32_t)a.syms[j].addr;
+                    memcpy(out->code + a.pats[i].offset, &addr, 4);
+                }
                 found = 1;
                 break;
             }
@@ -339,6 +370,12 @@ void fvm_disassemble(FILE *out, const Chunk *c)
             memcpy(&v, c->code + i, 4);
             i += 4;
             fprintf(out, " %d", v);
+            break;
+        }
+        case OPD_NARGS: {
+            if (i + 1 > c->len) { fputs("  ; truncado", out); i = c->len; break; }
+            fprintf(out, " %u", (unsigned)c->code[i]);
+            i += 1;
             break;
         }
         case OPD_CALL: {

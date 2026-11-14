@@ -16,6 +16,8 @@ struct Patch {
     offset: usize,
     name: String,
     line: usize,
+    /// 4 para saltos e `CALL`, 8 para `PUSH <rotulo>`.
+    width: usize,
 }
 
 /// Quebra uma linha em tokens. `:` é token próprio, para que `rotulo:` seja
@@ -130,20 +132,26 @@ pub fn assemble(source: &str, filename: &str) -> Result<Chunk, String> {
             match info.kind {
                 OperandKind::None => {}
 
+                OperandKind::Nargs => match toks.get(i).and_then(|t| parse_int(t)) {
+                    Some(n) if (0..=255).contains(&n) => {
+                        chunk.write_u8(n as u8);
+                        i += 1;
+                    }
+                    _ => {
+                        errors.push(format!(
+                            "{filename}:{lineno}: erro: {} exige nargs entre 0 e 255",
+                            info.name
+                        ));
+                        chunk.write_u8(0);
+                    }
+                },
+
                 OperandKind::I64 | OperandKind::Slot => {
                     let want_i64 = info.kind == OperandKind::I64;
-                    match toks.get(i).and_then(|t| parse_int(t)) {
-                        Some(v) => {
-                            if want_i64 {
-                                chunk.write_i64(v);
-                            } else {
-                                chunk.write_i32(v as i32);
-                            }
-                            i += 1;
-                        }
+                    match toks.get(i) {
                         None => {
                             errors.push(format!(
-                                "{filename}:{lineno}: erro: {} exige um operando inteiro",
+                                "{filename}:{lineno}: erro: {} exige um operando",
                                 info.name
                             ));
                             if want_i64 {
@@ -151,6 +159,33 @@ pub fn assemble(source: &str, filename: &str) -> Result<Chunk, String> {
                             } else {
                                 chunk.write_i32(0);
                             }
+                        }
+                        Some(t) => {
+                            match parse_int(t) {
+                                Some(v) if want_i64 => chunk.write_i64(v),
+                                Some(v) => chunk.write_i32(v as i32),
+                                // `PUSH <rotulo>` empurra o ENDERECO do rotulo
+                                // como inteiro: e o que permite montar uma
+                                // closure sem instrucao nova. So vale para
+                                // operando de 64 bits; um slot nao e endereco.
+                                None if want_i64 => {
+                                    patches.push(Patch {
+                                        offset: chunk.code.len(),
+                                        name: t.clone(),
+                                        line: lineno,
+                                        width: 8,
+                                    });
+                                    chunk.write_i64(0);
+                                }
+                                None => {
+                                    errors.push(format!(
+                                        "{filename}:{lineno}: erro: {} exige um indice inteiro",
+                                        info.name
+                                    ));
+                                    chunk.write_i32(0);
+                                }
+                            }
+                            i += 1;
                         }
                     }
                 }
@@ -164,6 +199,7 @@ pub fn assemble(source: &str, filename: &str) -> Result<Chunk, String> {
                                     offset: chunk.code.len(),
                                     name: t.clone(),
                                     line: lineno,
+                                    width: 4,
                                 });
                                 chunk.write_i32(0);
                             }
@@ -189,6 +225,7 @@ pub fn assemble(source: &str, filename: &str) -> Result<Chunk, String> {
                                         offset: chunk.code.len(),
                                         name: t.clone(),
                                         line: lineno,
+                                        width: 4,
                                     });
                                     chunk.write_i32(0);
                                 }
@@ -224,6 +261,7 @@ pub fn assemble(source: &str, filename: &str) -> Result<Chunk, String> {
     // relocations
     for p in &patches {
         match symbols.iter().find(|(n, _)| *n == p.name) {
+            Some((_, addr)) if p.width == 8 => chunk.patch_i64(p.offset, *addr as i64),
             Some((_, addr)) => chunk.patch_i32(p.offset, *addr as i32),
             None => errors.push(format!(
                 "{filename}:{}: erro: rotulo '{}' nao definido",
@@ -275,6 +313,15 @@ pub fn disassemble(chunk: &Chunk) -> String {
 
         match info.kind {
             OperandKind::None => {}
+            OperandKind::Nargs => {
+                if i + 1 > code.len() {
+                    let _ = write!(out, "  ; truncado");
+                    i = code.len();
+                } else {
+                    let _ = write!(out, " {}", code[i]);
+                    i += 1;
+                }
+            }
             OperandKind::I64 => {
                 if i + 8 > code.len() {
                     let _ = write!(out, "  ; truncado");

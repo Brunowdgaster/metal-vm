@@ -54,6 +54,7 @@ typedef enum {
     OP_ASET,
     OP_ALEN,
     OP_GC,        /* força uma coleta (para testes)        */
+    OP_CALLI,     /* u8 nargs — chamada indireta via closure */
     OP__COUNT
 } Op;
 
@@ -65,8 +66,31 @@ typedef enum {
     OPD_I64,    /* imediato de 64 bits   */
     OPD_LABEL,  /* rótulo -> endereço i32 */
     OPD_SLOT,   /* índice i32            */
-    OPD_CALL    /* rótulo i32 + nargs u8 */
+    OPD_CALL,   /* rótulo i32 + nargs u8 */
+    OPD_NARGS   /* nargs u8              */
 } OperandKind;
+
+/* Convenção de chamada do OP_CALLI (chamada indireta).
+ *
+ * Pilha na entrada:  [... closure arg1 ... argN]   com nargs = N
+ * Frame resultante:  base = sp - N - 1
+ *                    slot 0    = a própria closure
+ *                    slot 1..N = os argumentos
+ *
+ * A closure é um array cujo item 0 é um inteiro: o endereço do código a
+ * executar. Os itens 1.. são os valores capturados, lidos de dentro da função
+ * com LOAD 0 seguido de PUSH i e AGET — instruções que já existiam.
+ *
+ * Duas consequências de desenho:
+ *
+ *  - A closure NÃO é desempilhada: ela permanece como slot 0, o que dá acesso
+ *    às capturas sem nenhuma instrução extra e sem um registrador de ambiente.
+ *  - RET continua inalterado: ele trunca a pilha até `base`, o que descarta
+ *    closure e argumentos juntos.
+ *
+ * Nada no modelo de memória muda. A closure é um array comum, então o coletor
+ * mark & sweep já a percorre e já coleta ciclos — uma closure que capture a si
+ * mesma não precisa de tratamento nenhum. */
 
 typedef struct {
     const char *name;

@@ -122,7 +122,7 @@ perdidos no dispatch desaparecem. Resposta da pergunta 3.
 **3. Computed goto rende 3–4 % quando a carga é dominada por alocação**, nas
 três máquinas. É a única parte da pergunta 1 com resposta reprodutível.
 
-**4. As duas implementações são intercambiáveis no nível do bytecode.** 42/42
+**4. As duas implementações são intercambiáveis no nível do bytecode.** 54/54
 verificações: cada VM executa o `.fbc` da outra, os dois montadores emitem
 bytes idênticos e os dois desmontadores produzem texto idêntico.
 
@@ -190,7 +190,7 @@ por regressão.
 
 ## Compatibilidade entre as implementações
 
-`tests/cross_compat.sh` faz 42 verificações, todas passando:
+`tests/cross_compat.sh` faz 54 verificações, todas passando:
 
 ```
 C monta    -> C executa          ✓     Rust monta -> Rust executa    ✓
@@ -294,6 +294,43 @@ Três decisões estruturais, idênticas nas duas implementações:
 
 Conjunto de instruções, modelo de frames e formato do `.fbc`:
 [docs/ISA.md](docs/ISA.md).
+
+## `CALLI`: a instrução que o projeto P02 pediu
+
+O P01 afirmava que o bytecode foi "desenhado para o P02 estender". O
+[forge-lang](https://github.com/Brunowdgaster/forge-lang) chegou ao ponto de
+precisar de **closures**, e a afirmação foi testada: quanto da VM precisa mudar?
+
+**Resposta: uma instrução.**
+
+```
+CALLI <nargs u8>     -- chamada indireta: o destino vem dos dados
+```
+
+Uma closure é um array comum, `[endereço, capturados...]`, então o heap e o
+coletor existentes bastam — inclusive para uma closure que capture a si mesma,
+porque o mark & sweep já trata ciclos. A closure fica como **slot 0** do frame
+e não é desempilhada, de modo que as capturas saem de `LOAD 0; PUSH i; AGET`,
+tudo com instruções que já existiam. `RET` não mudou.
+
+Para montar a closure faltava o endereço do código como valor. Em vez de um
+segundo opcode, **`PUSH` passou a aceitar rótulo**, resolvido pelo montador
+como imediato de 64 bits. Alocar a closure é `NEWARR` + `ASET`.
+
+Custo total medido no diff: **~45 linhas somando as duas VMs**, mais 10 no
+montador de cada uma. `CALLI` entrou no fim do enum (opcode 31), então todo
+`.fbc` anterior continua válido byte a byte.
+
+Dois casos de teste escritos à mão exercitam a instrução
+(`tests/cases/closure.fasm` e `closure_dispatch.fasm`, este último escolhendo
+entre duas closures numa tabela em tempo de execução), e a compatibilidade
+cruzada subiu de 42 para 54 verificações — os dois montadores concordam byte a
+byte sobre `CALLI` e sobre `PUSH <rótulo>`.
+
+Do lado do compilador, o forge agora compila ordem superior, lambdas com
+captura, composição e aplicação parcial encadeada. O coletor recicla closures
+descartadas como qualquer outro objeto: num teste que aloca 5.000 delas, **2
+coletas, 320 KB reciclados, e a closure ainda alcançável sobreviveu**.
 
 ## Linguagens e ferramentas
 
@@ -453,8 +490,10 @@ vantagem que não teria nada a ver com desempenho.
   assinar o binário com certificado de reputação, ou compilar no WSL — foi o
   caminho adotado. **O `build.ps1` e o job MSVC do CI continuam válidos**: o
   bloqueio é da política local da máquina, não do código.
-- **Sem tipos além de inteiro e array.** Nada de ponto flutuante, string,
-  dicionário ou closure. O bytecode foi desenhado para o P02 estender.
+- **Sem tipos além de inteiro e array.** Nada de ponto flutuante, string ou
+  dicionário. Closures existem, mas como convenção do compilador sobre arrays —
+  a VM não tem um tipo de closure, e isso é deliberado: o `CALLI` valida o que
+  precisa validar e nada mais.
 - **Pilha de tamanho fixo** (65.536 valores, 4.096 frames). O estouro é
   detectado e reportado nas duas implementações, com teste para isso.
 - **Sem JIT.** Deliberado: o projeto mede interpretação.
@@ -538,10 +577,11 @@ Em ordem de retorno esperado:
 | Montador com relocations + desmontador (nas duas) | ✅ completo |
 | GC mark & sweep iterativo (nas duas) | ✅ completo, contabilidade idêntica |
 | Dispatch `switch` e computed goto (C) | ✅ ambos, mesmo corpo de código |
+| `CALLI` (chamada indireta) + `PUSH <rótulo>` | ✅ nas duas VMs, pedido pelo P02 |
 | Pilha `Vec` e `Box<[T]>` (Rust) | ✅ ambas, mesma interface |
-| Suíte `.fasm` (7 casos) | ✅ 7/7 em C (gcc e MSVC) e em Rust |
+| Suíte `.fasm` (9 casos, 2 de closure) | ✅ 9/9 em C (gcc e MSVC) e em Rust |
 | Testes unitários do Rust | ✅ 9/9 |
-| Compatibilidade cruzada de bytecode | ✅ 42/42 verificações |
+| Compatibilidade cruzada de bytecode | ✅ 54/54 verificações |
 | Harness de benchmark com dispersão | ✅ |
 | CI (gcc/clang × switch/goto, MSVC, cargo, cross-compat, bench) | ✅ 9/9 jobs verdes |
 | Portes C++, Zig, Assembly, Nim, Odin, D, V, Ada | ⬜ não iniciados |

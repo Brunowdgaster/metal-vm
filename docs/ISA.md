@@ -18,6 +18,7 @@ instruções executadas para o mesmo trabalho; uma VM de registradores faria
 | `label` | 4 | `JMP`, `JZ`, `JNZ` (endereço absoluto) |
 | `slot` | 4 | `LOAD`, `STORE`, `RESERVE` |
 | `call` | 4 + 1 | `CALL` (endereço + nargs) |
+| `nargs` | 1 | `CALLI` |
 
 ## Instruções
 
@@ -49,6 +50,59 @@ Notação de efeito na pilha: `antes -- depois`, topo à direita.
 | `ASET` | — | `arr i v --` | com verificação de limites |
 | `ALEN` | — | `arr -- n` | |
 | `GC` | — | `--` | força uma coleta (para testes) |
+| `CALLI n` | nargs | `clo a1..an -- ret` | chamada **indireta**: o destino vem da closure |
+
+## Chamada indireta e closures
+
+`CALL` tem o endereço fixo no bytecode: basta para funções de primeira ordem e
+não basta para closures. `CALLI` resolve o destino a partir de **dados**.
+
+Uma closure é um **array comum** — nada de novo no modelo de memória:
+
+```
+closure = [ endereço_do_código, capturado_0, capturado_1, ... ]
+            ^ item 0, inteiro    ^ itens 1..
+```
+
+Convenção de chamada do `CALLI n`:
+
+```
+pilha na entrada:  [... closure arg1 ... argN]
+frame resultante:  base = sp - N - 1
+                   slot 0    = a própria closure
+                   slot 1..N = os argumentos
+```
+
+Duas consequências deliberadas:
+
+1. **A closure não é desempilhada.** Fica como slot 0, então as capturas são
+   lidas com `LOAD 0; PUSH i; AGET` — instruções que já existiam. Não há
+   registrador de ambiente nem instrução de acesso a captura.
+2. **`RET` não mudou.** Ele trunca a pilha até `base`, o que descarta closure e
+   argumentos juntos.
+
+Como closure é array, o coletor mark & sweep já a percorre e já coleta ciclos:
+uma closure que capture a si mesma não precisa de tratamento nenhum.
+
+### `PUSH` aceita rótulo
+
+Para montar uma closure é preciso o **endereço do código como valor**. Em vez
+de um opcode novo, `PUSH` passou a aceitar um rótulo, que o montador resolve
+como imediato de 64 bits:
+
+```
+PUSH soma_capturado      ; empurra o endereço, não um número escrito à mão
+```
+
+É o que mantém o custo da Fase 2 em **uma única instrução nova** (`CALLI`):
+alocar a closure é `NEWARR` + `ASET`, que já existiam.
+
+### Compatibilidade
+
+`CALLI` entrou no **fim** do enum de opcodes (valor 31), então todo `.fbc`
+anterior continua válido byte a byte e o magic segue `FVM1`. Um `.fbc` que use
+`CALLI` executado numa VM anterior falha com "opcode invalido" — erro detectado
+e reportado, não corrupção silenciosa.
 
 ## Modelo de frames
 

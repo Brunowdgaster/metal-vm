@@ -1,0 +1,31 @@
+; Chamada indireta com captura, escrita a mao.
+;
+; Uma closure e um array [endereco, capturados...]. PUSH aceita rotulo, que o
+; montador resolve como endereco -- entao construir a closure nao usa nenhuma
+; instrucao nova alem do CALLI.
+.entry main
+
+; soma_capturado(clo = slot 0, x = slot 1) = clo[1] + x
+soma_capturado:
+  LOAD 0
+  PUSH 1
+  AGET              ; valor capturado
+  LOAD 1            ; argumento
+  ADD
+  RET
+
+main:
+  PUSH 2
+  NEWARR            ; [arr]
+  DUP
+  PUSH 0
+  PUSH soma_capturado
+  ASET              ; arr[0] = endereco do codigo
+  DUP
+  PUSH 1
+  PUSH 10
+  ASET              ; arr[1] = 10  (valor capturado)
+  PUSH 32           ; argumento
+  CALLI 1           ; base = sp-2: slot0 = closure, slot1 = 32
+  PRINT             ; 42
+  HALT

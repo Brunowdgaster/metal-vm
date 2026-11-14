@@ -46,6 +46,7 @@ static const OpInfo g_ops[OP__COUNT] = {
     { "ASET",    OP_ASET,    OPD_NONE  },
     { "ALEN",    OP_ALEN,    OPD_NONE  },
     { "GC",      OP_GC,      OPD_NONE  },
+    { "CALLI",   OP_CALLI,   OPD_NARGS },
 };
 
 const OpInfo *fvm_op_table(void) { return g_ops; }

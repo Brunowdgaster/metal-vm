@@ -1,0 +1,73 @@
+; Despacho por dados: duas closures num array, escolhida em tempo de execucao.
+; E a prova de que CALLI chama o que os DADOS dizem, nao o que o codigo fixou.
+.entry main
+
+dobra:            ; (clo, x) -> x * 2
+  LOAD 1
+  PUSH 2
+  MUL
+  RET
+
+triplica:         ; (clo, x) -> x * 3
+  LOAD 1
+  PUSH 3
+  MUL
+  RET
+
+; aplica(tabela = slot 0, i = slot 1, x = slot 2) = tabela[i](x)
+aplica:
+  LOAD 0
+  LOAD 1
+  AGET            ; closure escolhida
+  LOAD 2          ; argumento
+  CALLI 1
+  RET
+
+main:
+  RESERVE 1       ; slot 0 = tabela
+  PUSH 2
+  NEWARR
+  STORE 0
+
+  ; tabela[0] = closure de dobra
+  LOAD 0
+  PUSH 0
+  PUSH 1
+  NEWARR
+  DUP
+  PUSH 0
+  PUSH dobra
+  ASET
+  ASET
+
+  ; tabela[1] = closure de triplica
+  LOAD 0
+  PUSH 1
+  PUSH 1
+  NEWARR
+  DUP
+  PUSH 0
+  PUSH triplica
+  ASET
+  ASET
+
+  LOAD 0
+  PUSH 0
+  PUSH 7
+  CALL aplica 3
+  PRINT           ; 14
+
+  LOAD 0
+  PUSH 1
+  PUSH 7
+  CALL aplica 3
+  PRINT           ; 21
+
+  GC              ; as closures estao alcancaveis pela tabela: nada coletado
+  LOAD 0
+  PUSH 1
+  AGET
+  PUSH 5
+  CALLI 1
+  PRINT           ; 15  (sobreviveu a coleta)
+  HALT
