@@ -20,26 +20,123 @@ coletas de GC   : 0
 dispatch        : switch
 ```
 
-## O problema
+## Objetivo do experimento
 
-Todo interpretador gasta a maior parte do tempo decidindo *qual* instrução
-executar, não executando. Essa decisão — o **dispatch** — é um salto indireto
-que o preditor de saltos da CPU precisa acertar milhões de vezes por segundo.
+Um interpretador é um objeto quase ideal para isolar efeitos de linguagem, de
+compilador e de hardware. O laço quente tem umas poucas dezenas de instruções e
+executa centenas de milhões de vezes, então qualquer custo por instrução
+aparece amplificado e medível. É o microscópio: pequeno o suficiente para se
+controlar tudo, repetitivo o suficiente para o efeito emergir do ruído.
 
-Três perguntas, respondidas com número e não com opinião:
+O projeto usa esse microscópio para responder **três perguntas sobre custo**, e
+foi desenhado para que cada uma seja medida variando **uma coisa só**:
 
-1. **Quanto se ganha trocando um `switch` por *computed goto*?** E qual é a
-   confiança desse número numa máquina real, com ruído real?
-2. **Quanto custa a segurança do Rust** num programa onde cada instrução faz
-   acesso indexado a buffer?
-3. **O que o modelo de ownership força a mudar** num programa que é, por
-   natureza, um grafo de objetos com ciclos e um coletor de lixo?
+| pergunta | o que varia | o que fica fixo |
+|---|---|---|
+| 1. Quanto custa a estratégia de *dispatch*? | `switch` × computed goto | linguagem, código, flags, máquina |
+| 2. Quanto custa a segurança do Rust? | C × Rust seguro | algoritmo, ISA, carga, máquina |
+| 3. O que o *ownership* obriga a mudar? | representação dos objetos | semântica do GC, pontos de coleta |
+
+E, como o CI acabou rodando em duas CPUs diferentes da minha, apareceu uma
+quarta variável que **eu não tinha planejado controlar**: a própria máquina. Foi
+ela que derrubou metade das conclusões — e virou o resultado mais interessante
+do projeto.
+
+### O que o experimento mantém fixo, e por quê
+
+Comparar duas implementações só significa algo se todo o resto for igual. O que
+foi deliberadamente igualado:
+
+- **A carga de trabalho exata.** Os três programas de benchmark são
+  determinísticos, então as duas implementações executam **a mesma contagem de
+  instruções** — 390.000.012 no `loop`, 26.925.370 no `fib(30)`. Isso é
+  verificado em toda execução, e é o que permite comparar *throughput* em vez
+  de tempo bruto.
+- **O bytecode.** As duas VMs leem o mesmo `.fbc`, e os dois montadores emitem
+  bytes idênticos — 42/42 verificações. Sem isso, uma diferença de desempenho
+  poderia ser apenas um montador gerando código melhor que o outro.
+- **A contabilidade de memória.** O GC em Rust calcula bytes com a fórmula do
+  layout C, e não com o `size_of` real das structs Rust, para que as duas
+  implementações disparem coletas **nos mesmos pontos**: 1.831 coletas e
+  479.868.480 bytes liberados, idênticos nas duas. Sem isso o Rust coletaria
+  menos vezes e pareceria mais rápido por um motivo irrelevante.
+- **A interface de linha de comando**, byte a byte, para que um único harness
+  meça as duas sem nenhum caso especial. Dois harnesses medem duas coisas.
+- **A semântica aritmética**: `wrapping_*` no Rust, porque estouro de inteiro
+  com sinal é comportamento indefinido em C e o `-O3` explora isso.
+- **O nível de otimização**: `-O3` e `opt-level=3`, **sem LTO em nenhum dos
+  dois**. Ligar LTO só no Rust daria vantagem artificial.
+
+### O que conta como resposta
+
+Um número só vale como resposta se vier com a condição em que foi obtido. Por
+isso toda tabela deste projeto reporta **dispersão** ao lado do valor, e por
+isso a pergunta 1 foi escrita desde o início como *quanto se ganha, e qual é a
+confiança desse número numa máquina real, com ruído real*.
+
+A consequência prática aparece abaixo: um resultado é publicado como
+estabelecido só quando **reproduz em hardwares diferentes**. Os que não
+reproduziram estão listados como não reproduzidos, não escondidos.
+
+### O que este projeto não é
+
+Não é um interpretador para uso real — não tem ponto flutuante, string,
+dicionário nem closure, e não tem JIT. A VM é o **instrumento**, não o produto.
+
+O produto são três coisas: as respostas medidas, o aparato que as produz
+(harness com dispersão, suíte de compatibilidade cruzada, CI em 9
+configurações) e um formato de bytecode provado estável, que é o substrato do
+P02 — uma linguagem que compila para ele — e do P09, uma CPU RISC-V em Verilog
+que o executa.
 
 ## Resultado
 
-### Três máquinas, e só parte do resultado reproduz
+### O que ficou estabelecido
 
-Mesmo código, mesmas flags, três CPUs. Throughput em Mops/s, melhor execução:
+Reproduziu em CPUs diferentes, com dispersão reportada:
+
+**1. A segurança do Rust custa 41–47 % no dispatch** — e 45–53 % em código com
+muita chamada de função. Medido num i5-8250U de notebook e num AMD EPYC de
+servidor, mesma ordem de grandeza:
+
+| | `loop` | `fib(30)` |
+|---|---|---|
+| i5-8250U | −46,5 % | −53,1 % |
+| runner EPYC 9V74 | −40,9 % | −45,5 % |
+
+Esta é a resposta da pergunta 2 e o resultado mais sólido do projeto. A causa
+provável é o teste de limite que o Rust insere em cada indexação, somado à
+propagação de erro com `?` — *provável* porque separar as duas exige contadores
+de hardware, que estão no roadmap.
+
+**2. O ownership obriga a arena com handles, e isso apaga a desvantagem do Rust
+na carga de alocação.** Um grafo de objetos com ciclos não passa pelo borrow
+checker, então `Value::Obj` carrega um índice e não um ponteiro. Resultado
+medido: na carga dominada por GC as quatro configurações empatam dentro de
+±5 % — reciclar um slot de arena iguala `malloc`/`free` por objeto, e os 41 %
+perdidos no dispatch desaparecem. Resposta da pergunta 3.
+
+**3. Computed goto rende 3–4 % quando a carga é dominada por alocação**, nas
+três máquinas. É a única parte da pergunta 1 com resposta reprodutível.
+
+**4. As duas implementações são intercambiáveis no nível do bytecode.** 42/42
+verificações: cada VM executa o `.fbc` da outra, os dois montadores emitem
+bytes idênticos e os dois desmontadores produzem texto idêntico.
+
+**5. O coletor funciona, e funciona igual nas duas.** Na carga de 3 milhões de
+arrays descartados:
+
+> **480 MB de lixo reciclados mantendo o heap vivo em 256 KB**, em 1.831
+> coletas — os três números idênticos em C e em Rust.
+
+E o contrateste, com 100 arrays alcançáveis e coleta forçada: **0 bytes
+liberados**, que é o resultado correto. Um GC que libera 1 byte ali está
+errado, e o teste falha.
+
+### O que não reproduziu
+
+**O ganho do computed goto no laço apertado.** Mesma origem de código, mesmas
+flags, três CPUs:
 
 | | `loop` sw → goto | `fib(30)` sw → goto | `alloc` sw → goto | dispersão |
 |---|---|---|---|---|
@@ -47,59 +144,38 @@ Mesmo código, mesmas flags, três CPUs. Throughput em Mops/s, melhor execução
 | **runner #1** CPU n/i | 631,5 → 566,6 (**−10,3 %**) | 600,9 → 596,9 (−0,7 %) | 236,9 → 243,5 (+2,8 %) | 0,2–2,6 % |
 | **runner #2** EPYC 9V74 | 410,7 → 423,4 (**+3,1 %**) | 399,9 → 425,0 (+6,3 %) | 150,2 → 156,3 (+4,1 %) | 0,5–1,9 % |
 
-E o Rust, contra o `switch` do C na mesma máquina:
+**O sinal muda com a CPU.** Não existe número publicável aqui — e dizer isso é
+a resposta, não a ausência dela.
 
-| | `loop` | `fib(30)` | `alloc` |
-|---|---|---|---|
-| i5-8250U | 212,9 (**−46,5 %**) | 165,8 (−53,1 %) | 124,1 (+3,7 %) |
-| runner #2 | 242,9 (**−40,9 %**) | 218,1 (−45,5 %) | 143,7 (−4,3 %) |
+"Computed goto é mais rápido que switch" é folclore repetido na área desde Ertl
+& Gregg (2003), quando os preditores de saltos eram simples e a técnica de fato
+dava ao preditor um sítio por opcode em vez de um compartilhado. Preditores
+modernos do tipo ITTAGE acertam o `switch` quase tão bem, e o que sobra para o
+computed goto é o custo: código maior, mais pressão no cache de instruções.
+Rohou, Swamy e Seznec mediram exatamente isso em *Branch Prediction and the
+Performance of Interpreters — Don't Trust Folklore* (CGO 2015). Este projeto
+reencontrou o resultado deles sem ter partido dele.
 
-**O que reproduz nas três máquinas:**
+Confirmar o mecanismo exige `perf stat` contando *branch misses* nas três
+máquinas. Até lá, a afirmação é só esta: **o efeito é menor que a variação
+entre hardwares, e duas máquinas discordaram da terceira.**
 
-- **O Rust seguro custa 41–47 % no dispatch** e 45–53 % em código com muita
-  chamada. Dois hardwares bem diferentes, mesma ordem de grandeza: este é o
-  resultado sólido do projeto. A causa provável é o teste de limite por
-  indexação e a propagação de erro com `?` — *provável* porque separar as duas
-  exige `perf`.
-- **Computed goto ganha 3–4 % no benchmark de alocação**, nas três.
-- **Computed goto ganha ~6 % no `fib`** em duas das três (na terceira, empata).
-
-**O que NÃO reproduz:**
-
-- **O ganho no laço apertado.** +11,8 %, −10,3 % e +3,1 %. O sinal muda com a
-  CPU. Não existe um número para publicar aqui, e o honesto é dizer isso.
-- **A vantagem do Rust na alocação.** +3,7 % num hardware, −4,3 % no outro: as
-  quatro configurações ficam dentro de ±5 % e a ordenação troca. A arena com
-  lista de livres **empata** com `malloc`/`free` por objeto; não ganha.
+**A vantagem do Rust na alocação**, que uma versão anterior deste README
+afirmava: +3,7 % num hardware, −4,3 % no outro. É empate, não vitória.
 
 **E uma descoberta de método:** runner compartilhado não é linha de base. Os
-dois runners `ubuntu-latest` rodaram binários idênticos e deram 631,5 e
-410,7 Mops/s — **54 % de diferença**, porque o GitHub aloca modelos de CPU
-diferentes a cada execução. A dispersão *dentro* de uma execução é ótima
-(0,2 %), mas *entre* execuções não há comparabilidade. É a razão pela qual o
-job de benchmark do CI mede e **não** falha por regressão.
+dois runners `ubuntu-latest` executaram **binários idênticos** e deram 631,5 e
+410,7 Mops/s — 54 % de diferença, porque o modelo de CPU muda a cada execução.
+Dispersão baixa *dentro* de uma execução (0,2 %) não garante comparabilidade
+*entre* execuções. É por isso que o job de benchmark do CI mede e **não** falha
+por regressão.
 
-Sobre o laço apertado, a hipótese compatível com a literatura é o preditor de
-saltos indiretos: a vantagem do computed goto é dar ao preditor um sítio por
-opcode em vez de um compartilhado, o que valia quando os preditores eram
-simples (Ertl & Gregg, 2003); preditores modernos tipo ITTAGE acertam o
-`switch` quase tão bem, e sobra só o custo de código maior. Rohou, Swamy e
-Seznec mediram isso em *Branch Prediction and the Performance of Interpreters
-— Don't Trust Folklore* (CGO 2015), e o título resume o que aconteceu aqui.
-Confirmar exige `perf stat` contando *branch misses* nas três máquinas — é o
-primeiro item do roadmap.
-
-> **Histórico das correções desta seção**, porque o processo é parte do
+> **Histórico das três versões desta seção**, porque o processo é parte do
 > resultado: a v1 publicou "+11,8 %" de uma máquina só; a v2, com o runner #1,
-> inverteu para "−10,3 %, e esta é a confiável"; a v3 — esta — tem três
-> máquinas e conclui que o efeito no laço apertado **não é determinado**. Cada
-> correção veio de uma medição nova, não de uma mudança de opinião. O `git log`
-> tem as três.
-
-E o coletor, nas duas implementações, com números idênticos:
-
-> **480 MB de lixo reciclados mantendo o heap vivo em 256 KB**, em 1.831
-> coletas.
+> inverteu para "−10,3 %, e esta é a confiável" — repetindo o mesmo erro com
+> uma máquina mais limpa; a v3, esta, tem três máquinas e conclui que o efeito
+> no laço apertado não está determinado. Nenhuma correção veio de mudança de
+> opinião: cada uma veio de uma medição nova. O `git log` tem as três.
 
 ## Compatibilidade entre as implementações
 
