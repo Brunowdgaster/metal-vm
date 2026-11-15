@@ -1,0 +1,12 @@
+# Binários dos portes: cada um se compila com a sua toolchain.
+fvm_nim
+fvm_odin
+fvm_d
+fvm_v
+fvm_ada
+
+# Artefatos intermediários
+*.o
+*.ali
+nim/nimcache/
+d/*.obj

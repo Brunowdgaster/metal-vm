@@ -69,6 +69,68 @@ jobs:
 
   # O teste que só existe porque há duas implementações: as duas têm de emitir
   # bytecode byte a byte idêntico e executar o arquivo uma da outra.
+  # Os cinco portes do nucleo minimo. Um job so, porque as toolchains sao
+  # independentes e o que importa e a verificacao conjunta: todos executando o
+  # MESMO .fbc montado pelo C.
+  #
+  # Nao mede tempo aqui: a tabela de ports/mede.sh depende da maquina, e runner
+  # compartilhado nao serve de linha de base -- este repositorio ja mediu 631 e
+  # 411 Mops/s em dois runners identicos. O que o CI verifica e o que NAO
+  # depende da maquina: saida byte a byte identica nos 9 casos.
+  portes:
+    runs-on: ubuntu-latest
+    name: portes (Nim, Odin, D, V, Ada)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: toolchains do apt
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          # clang e dependencia do Odin: ele usa o clang como linker.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq             nim gnat ldc clang cmake
+          nim --version | head -1
+          gnatmake --version | head -1
+          ldc2 --version | head -1
+
+      - name: Odin (release do GitHub, MIT)
+        run: |
+          set -euo pipefail
+          tag=dev-2026-11a
+          curl -sSL -o odin.tar.gz             "https://github.com/odin-lang/Odin/releases/download/$tag/odin-linux-amd64-$tag.tar.gz"
+          mkdir -p "$HOME/odin" && tar xzf odin.tar.gz -C "$HOME/odin"
+          bin=$(find "$HOME/odin" -maxdepth 3 -type f -name odin | head -1)
+          test -n "$bin" || { echo "binario do Odin nao encontrado no release"; exit 1; }
+          chmod +x "$bin"
+          echo "$(dirname "$bin")" >> "$GITHUB_PATH"
+          "$bin" version
+
+      - name: V (release do GitHub, MIT)
+        run: |
+          set -euo pipefail
+          curl -sSL -o v.zip https://github.com/vlang/v/releases/latest/download/v_linux.zip
+          mkdir -p "$HOME/vlang" && (cd "$HOME/vlang" && unzip -qo "$GITHUB_WORKSPACE/v.zip")
+          vbin=$(find "$HOME/vlang" -maxdepth 3 -type f -name v | head -1)
+          test -n "$vbin" || { echo "binario do V nao encontrado no release"; exit 1; }
+          chmod +x "$vbin"
+          echo "$(dirname "$vbin")" >> "$GITHUB_PATH"
+          "$vbin" version
+
+      - name: referencia em C
+        run: bash build.sh
+
+      - name: compila os cinco portes
+        run: |
+          set -euo pipefail
+          (cd ports/nim  && nim c -d:release --hints:off --out:fvm_nim fvm.nim)
+          (cd ports/odin && odin build fvm.odin -file -o:speed -out:fvm_odin)
+          (cd ports/d    && ldc2 -O3 --release -of=fvm_d fvm.d)
+          (cd ports/v    && v -prod -o fvm_v fvm.v)
+          (cd ports/ada  && gnatmake -O2 -o fvm_ada fvm.adb)
+
+      - name: 9 casos x 5 portes, saida byte a byte
+        run: bash ports/verifica.sh
+
   cross-compat:
     runs-on: ubuntu-latest
     needs: [c-linux, rust]

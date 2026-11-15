@@ -213,6 +213,26 @@ bash build.sh goto       # computed goto (só GCC/Clang)
 bash tests/run_tests.sh build-goto/fvm
 ```
 
+**Os cinco portes** — cada um precisa só da sua toolchain, e `verifica.sh`
+falha alto no que não estiver compilado em vez de pular em silêncio:
+
+```bash
+cd ports/nim  && nim c -d:release --hints:off --out:fvm_nim fvm.nim
+cd ports/odin && odin build fvm.odin -file -o:speed -out:fvm_odin   # precisa de clang
+cd ports/d    && ldc2 -O3 --release -of=fvm_d fvm.d
+cd ports/v    && v -prod -o fvm_v fvm.v
+cd ports/ada  && gnatmake -O2 -o fvm_ada fvm.adb
+
+bash ports/verifica.sh         # 9 casos × 5 portes contra o .fbc do C
+bash ports/verifica.sh nim d   # só esses dois
+bash ports/mede.sh             # a tabela comparativa
+```
+
+> A tabela de `ports/mede.sh` só vale com a máquina ociosa. Jogo aberto em
+> outra janela contamina qualquer número de tempo, por disputa de núcleo e por
+> *throttling* térmico — a coluna de dispersão é o detector, e a primeira
+> execução desta tabela foi descartada exatamente por isso.
+
 Rust (requer cargo):
 
 ```bash
@@ -331,6 +351,91 @@ Do lado do compilador, o forge agora compila ordem superior, lambdas com
 captura, composição e aplicação parcial encadeada. O coletor recicla closures
 descartadas como qualquer outro objeto: num teste que aloca 5.000 delas, **2
 coletas, 320 KB reciclados, e a closure ainda alcançável sobreviveu**.
+
+## Os cinco portes: Nim, Odin, D, V e Ada
+
+Além das duas implementações de referência (C e Rust), o bytecode é executado
+por **cinco portes do núcleo mínimo**, em `ports/`. Eles recebem o `.fbc`
+montado pelo C e produzem **saída byte a byte idêntica** nos 9 casos de
+`tests/cases/`.
+
+```
+bash ports/verifica.sh    # 9 casos × 5 portes
+bash ports/mede.sh        # linhas × compilação × execução × RSS
+```
+
+**São portes, declarados como tais**: executam, e não montam. Sem montador, sem
+desmontador, sem `--stats`. O montador do C já é verificado byte a byte contra
+o de Rust, e reescrevê-lo cinco vezes mediria paciência, não a linguagem.
+
+| impl | linhas | build | `fib` | RSS no `gc.fasm` | memória |
+|---|---|---|---|---|---|
+| **C** (ref.) | 1.299 | — | **11,1 ms** | 3.136 KiB | mark & sweep próprio |
+| **Rust** (ref.) | 1.221 | — | 15,1 ms | **2.648 KiB** | arena + mark & sweep |
+| **Nim** | **255** | **1,2 s** | 13,9 ms | 2.968 KiB | ORC (contagem de refs) |
+| **Odin** | 439 | 8,1 s | 14,6 ms | 5.020 KiB | arena, não recicla |
+| **D** | 479 | 11,1 s | 17,4 ms | 5.492 KiB | GC de rastreamento |
+| **V** | 410 | 9,3 s | 21,2 ms | 8.696 KiB | arena, não recicla |
+| **Ada** | 471 | 7,3 s | 15,9 ms | 12.028 KiB | arena, não recicla |
+
+11 repetições alternadas, mínimo, duas execuções completas reproduzindo dentro
+de 4%. `ports/README.md` tem o ensaio completo; três resultados valem o resumo
+aqui.
+
+### O Nim fez em 255 linhas, e errou do mesmo jeito que o C
+
+A quinta parte das linhas do C, 25% mais lento. A razão é que `case object` e
+ORC entregam, somados, a maior parte do que em C são 1.299 linhas.
+
+E o porte em Nim errou **exatamente** o bug que a implementação em C teve:
+
+```nim
+template push(v: Value) =
+  pilha[sp] = v      # ERRADO: sp é avaliado antes do pop() dentro de v
+  inc sp
+```
+
+É o `vm->stack[vm->sp++] = (v)` de novo, porque **template de Nim substitui
+texto, igual ao pré-processador do C**. A diferença: em C era comportamento
+indefinido que o MSVC aceitou calado; em Nim a ordem é definida e o código
+estava simplesmente errado. Nos dois casos, quem pegou foi teste.
+
+### A restrição do V chegou ao desenho que o Rust escolheu
+
+`type Value = i64 | &FvmArray` não compila: *"sum type cannot hold a reference
+type"*. A saída foi um **handle** para uma arena — que é **o mesmo desenho de
+`rust/src/gc.rs`**, onde o motivo era outro: o borrow checker não aceita grafo
+de objetos com donos múltiplos.
+
+Duas linguagens, duas restrições sem relação entre si, a mesma solução. E o
+preço foi real: o V tem coletor, mas a arena mantém tudo alcançável pelo
+índice, então ele não recicla nada.
+
+### O D tem coletor e ficou agrupado com os que não têm
+
+| | RSS no `gc.fasm` | estratégia |
+|---|---|---|
+| Rust, C, Nim | 2.648 – 3.136 KiB | reciclam durante o laço |
+| **D** | **5.492 KiB** | **tem GC, e não reciclou durante o laço** |
+| Odin, V, Ada | 5.020 – 12.028 KiB | não reciclam nunca |
+
+O `gc.fasm` cria 20 mil arrays que ficam inalcançáveis **no `POP` seguinte**. O
+ORC do Nim é contagem de referências e devolve ali; o mark & sweep do C dispara
+por limiar e coleta **durante** o laço; o GC de rastreamento do D coleta quando
+ele decide, e o `GC.collect()` do `OP_GC` só roda depois do pico.
+
+A coluna não mede "tem coletor". Mede **quando** o coletor roda — e para lixo
+em rajada, é essa a diferença que aparece no pico de memória.
+
+### E os 9 casos não distinguem nada disso
+
+Os sete passam em 9/9. O `gc.fasm` só confere que `42` é impresso; o
+`gc_live.fasm` confere que um array alcançável sobrevive — e numa arena que
+nunca libera, sobreviver é trivial.
+
+Os casos verificam **semântica**, não reciclagem. A coluna de RSS existe porque
+sem ela a tabela diria que as sete implementações são equivalentes, e elas não
+são.
 
 ## Linguagens e ferramentas
 
