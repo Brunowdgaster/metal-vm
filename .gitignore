@@ -20,3 +20,8 @@ Makefile
 *.swp
 binaries/
 rust/target*/
+ports/cpp/fvm_cpp
+ports/zig/fvm_zig
+ports/zig/*.o
+ports/asm/*/fvm.o
+ports/asm/*/fvm_*

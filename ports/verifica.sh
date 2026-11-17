@@ -39,6 +39,8 @@ FBC_DIR="${TMPDIR:-/tmp}/fvm_portes"
 
 # porte -> binário. Único lugar que precisa mudar ao acrescentar uma linguagem.
 declare -A BINARIO=(
+  [cpp]="ports/cpp/fvm_cpp"
+  [zig]="ports/zig/fvm_zig"
   [nim]="ports/nim/fvm_nim"
   [odin]="ports/odin/fvm_odin"
   [d]="ports/d/fvm_d"
@@ -46,7 +48,7 @@ declare -A BINARIO=(
   [ada]="ports/ada/fvm_ada"
 )
 
-ORDEM=(nim odin d v ada)
+ORDEM=(cpp zig nim odin d v ada)
 
 if [ $# -gt 0 ]; then
   ORDEM=("$@")

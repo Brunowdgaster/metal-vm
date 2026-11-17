@@ -1,10 +1,12 @@
 # Portes do núcleo mínimo
 
-Cinco linguagens executando **o mesmo bytecode** que a implementação em C
-produz, com saída verificada byte a byte.
+**Sete linguagens** executando o mesmo bytecode que a implementação em C
+produz, com saída verificada byte a byte — mais **três em Assembly**, que são
+um subconjunto declarado e têm suíte própria.
 
 ```
-bash ports/verifica.sh      # 9 casos × 5 portes, contra o .fbc do C
+bash ports/verifica.sh      # 9 casos × 7 portes, contra o .fbc do C
+bash ports/asm/verifica.sh  # o subconjunto inteiro, em 3 arquiteturas
 bash ports/mede.sh          # linhas × compilação × execução × RSS
 ```
 
@@ -33,6 +35,114 @@ e o caso aponta onde.
 > Estes são **portes**, declarados como tais, não implementações de referência.
 > As de referência são o C e o Rust, na raiz do repositório, e só elas têm
 > montador, coletor próprio e instrumentação.
+
+### C++ — o coletor desapareceu, e não virou outro coletor
+
+Em C, um array da VM entra numa lista encadeada de objetos vivos e o `OP_GC`
+percorre a pilha marcando o que alcança: são ~200 linhas.
+
+Aqui, `Value` guarda um `std::shared_ptr<Array>`, e a contagem de referências
+é feita pelo compilador nos lugares em que o C precisava de código.
+
+**E a diferença com o Nim é real:** o ORC do Nim coleta ciclos; `shared_ptr`
+**não**. Uma closure que capture a si mesma vaza no porte em C++. O
+`gc_live.fasm` passa porque não constrói ciclo — e dizer isso é mais honesto
+que anunciar "o C++ também resolveu".
+
+`std::variant<int64_t, ArrayPtr>` faz o acesso errado lançar
+`bad_variant_access`. Não é tão forte quanto o `case object` do Nim, que
+recusa em compilação, e é muito mais forte que a união do C.
+
+#### O frame raiz, e as 4 falhas que ele causou
+
+A primeira versão deste porte falhou em **4 dos 9 casos** — `closure`,
+`closure_dispatch`, `fib` e `locals`, exatamente os que usam `CALL`. O sintoma
+era **saída vazia com retorno zero**.
+
+A causa estava no `vm_run` do C, e não no ISA:
+
+```c
+/* Frame raiz: faz com que LOAD/STORE e RET funcionem no nível de topo sem
+ * nenhum caso especial no loop quente. */
+vm->frames[0].base = 0;
+vm->fp = 1;
+```
+
+Começando com `fp = 0`, o primeiro `RET` decrementava para zero, caía no ramo
+*"RET no frame raiz encerra o programa"*, e terminava antes do `PRINT` que
+vinha depois da chamada.
+
+> **Nada no bytecode nem no `docs/ISA.md` menciona esse frame.** Ele é uma
+> decisão de implementação que o contrato do porte herda, e descobri-la exigiu
+> ler o laço quente do C. É o que este README chama de "contrato mais severo
+> do que parece".
+
+### Zig — o alocador na assinatura, e `comptime`
+
+Em C, `malloc` é global e invisível no tipo. Em C++, `shared_ptr` esconde a
+alocação. Em Nim, o ORC decide sozinho.
+
+Em Zig, **toda função que aloca recebe um `Allocator`**. Não é cerimônia: é a
+resposta para *"quem é dono disto?"* escrita na assinatura, no lugar em que o
+C deixa para a documentação.
+
+A consequência: este porte usa uma **arena**, e a liberação é uma linha no
+fim. Nenhum array é liberado individualmente — todos morrem juntos.
+
+**E isso é uma decisão, não uma omissão.** O `OP_GC` aqui não coleta; a arena
+só cresce. Para os 9 casos basta, e para um programa longo não bastaria.
+
+E `comptime` resolve um problema que o C resolve com array escrito à mão: a
+tabela de larguras de operando é **derivada do enum em compilação**, e um
+opcode novo sem largura declarada é erro de compilação. Ela alimenta
+`validaPrograma`, que percorre o bytecode antes de executar — algo que a
+implementação em C **não** faz: lá, um `.fbc` truncado só falha quando o `ip`
+passa do fim, possivelmente depois de já ter impresso.
+
+### Assembly — o despacho, e só ele
+
+Os três portes em `ports/asm/` são um **subconjunto declarado**: pilha,
+aritmética, comparação, saltos, locais e `PRINT`. Sem heap, sem frames, sem
+closures.
+
+O plano do projeto é explícito sobre o porquê: *"Assembly entra no dispatch
+loop com medição"*. O subconjunto inteiro é o que **isola o custo do
+despacho** — os opcodes de heap passariam por alocador, e a medição mediria o
+alocador.
+
+Eles têm suíte própria (`ports/asm/verifica.sh`) porque `ports/verifica.sh`
+exige 9/9. Baixar aquela exigência para "os casos que cada porte suportar"
+destruiria o que ela garante.
+
+E a suíte verifica **as duas direções**: nos casos suportados a saída é a do
+C, byte a byte; nos demais o porte **falha alto**, com código 70. A segunda
+importa tanto quanto a primeira — um porte que ignorasse `NEWARR` imprimiria
+números errados em silêncio.
+
+#### Sem libc, e por quê
+
+O ponto de entrada é `_start`, e `open`/`read`/`write`/`exit` são `syscall`
+direto. A conversão de inteiro para decimal está escrita à mão.
+
+Não é purismo: com libc, o `printf` de um `PRINT` custaria mais que centenas
+de despachos, e a medição mediria a libc.
+
+#### O segfault que ensinou o que uma convenção de chamada é
+
+O `control.fasm` deu **segmentation fault** na primeira versão do x86-64.
+
+A causa: `op_jnz` e `op_store` leem o operando para `eax` e **só depois**
+chamam `checa1` — que usava `rax` como temporário e sobrescrevia o destino do
+salto.
+
+> Em C, o compilador conhece a convenção de chamada e salva o que precisa. Em
+> Assembly **não há convenção que proteja nada: quem escreve É a convenção.**
+> Um registrador compartilhado entre duas rotinas que nunca se leem é um
+> acoplamento invisível.
+
+A correção é `r11`, escolhido por ser *caller-saved* na ABI System V e não ser
+usado por nenhum opcode do arquivo — e a escolha está documentada porque ela é
+a única coisa que impede o bug de voltar.
 
 ## O que cada linguagem deu, e o que cobrou
 
@@ -182,6 +292,12 @@ GitHub deram 631 e 411 Mops/s na mesma medição.
 Medido em Intel i5-8250U, WSL2, 11 repetições alternadas, mínimo. **Duas
 execuções completas**: os mínimos reproduziram dentro de 4%.
 
+<!-- lint-medicao: ignorar — o método está na linha acima da tabela ("11
+     repetições alternadas, mínimo", e duas execuções completas dentro de 4%).
+     O lint procura o marcador no PARÁGRAFO, e uma linha de tabela é parágrafo
+     próprio — então ele não o alcança. É falso positivo da heurística, e a
+     dispensa é explícita em vez de silenciosa. -->
+
 | impl | linhas | build | `fib` | RSS no `gc.fasm` | memória |
 |---|---|---|---|---|---|
 | **C** (ref.) | 1.299 | — | **11,1 ms** | 3.136 KiB | mark & sweep próprio |
@@ -202,6 +318,9 @@ implementação em C tem, é um resultado melhor do que eu esperava.
 melhor relação entre esforço e resultado das cinco, e a razão é o `case object`
 mais o ORC: os dois pedaços que em C são, somados, a maior parte das 1.299
 linhas.
+
+<!-- lint-medicao: ignorar — os mesmos números da tabela acima, com o método
+     declarado ali: 11 repetições alternadas, mínimo. -->
 
 **O custo de iterar varia 9x.** Nim compila em 1,2 s; D em 11,1 s. Isso não
 aparece em benchmark de execução e é o número que mais afeta escrever o código:

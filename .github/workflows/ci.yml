@@ -77,9 +77,36 @@ jobs:
   # compartilhado nao serve de linha de base -- este repositorio ja mediu 631 e
   # 411 Mops/s em dois runners identicos. O que o CI verifica e o que NAO
   # depende da maquina: saida byte a byte identica nos 9 casos.
+  # Os portes em Assembly sao um SUBCONJUNTO declarado -- pilha, aritmetica,
+  # saltos, locais e PRINT -- e por isso tem suite propria. Juntar os dois
+  # exigiria baixar a exigencia de 9/9 da suite dos portes completos, e um
+  # criterio elastico nao garante nada.
+  assembly:
+    runs-on: ubuntu-latest
+    name: assembly (x86-64, ARM64, RISC-V)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: montadores e qemu
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          # qemu-user executa binario de outra arquitetura traduzindo as
+          # instrucoes e repassando as syscalls ao kernel do hospedeiro -- nao
+          # e emulacao de maquina inteira, e por isso o custo e aceitavel aqui.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq             binutils gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu qemu-user cmake
+          as --version | head -1
+          qemu-aarch64 --version | head -1
+
+      - name: referencia em C
+        run: bash build.sh
+
+      - name: a suite do assembly
+        run: bash ports/asm/verifica.sh
+
   portes:
     runs-on: ubuntu-latest
-    name: portes (Nim, Odin, D, V, Ada)
+    name: portes (C++, Zig, Nim, Odin, D, V, Ada)
     steps:
       - uses: actions/checkout@v5
 
@@ -88,7 +115,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           # clang e dependencia do Odin: ele usa o clang como linker.
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq             nim gnat ldc clang cmake
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq             nim gnat ldc clang cmake g++ binutils
           nim --version | head -1
           gnatmake --version | head -1
           ldc2 --version | head -1
@@ -116,12 +143,30 @@ jobs:
           echo "$(dirname "$vbin")" >> "$GITHUB_PATH"
           "$vbin" version
 
+      - name: Zig (release oficial, MIT)
+        run: |
+          set -euo pipefail
+          # Versao FIXA pelo mesmo argumento do nixpkgs travado no p12:
+          # "latest" nao responde "com o que isso foi verificado". E aqui o
+          # risco e concreto -- o Zig muda a biblioteca padrao entre versoes
+          # menores, e `std.io.bufferedWriter` ja mudou de nome antes.
+          ver=0.14.1
+          curl -sSL -o zig.tar.xz "https://ziglang.org/download/$ver/zig-linux-x86_64-$ver.tar.xz"
+          mkdir -p "$HOME/zig" && tar xJf zig.tar.xz -C "$HOME/zig" --strip-components=1
+          test -x "$HOME/zig/zig" || { echo 'binario do Zig nao encontrado'; exit 1; }
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+          "$HOME/zig/zig" version
+
       - name: referencia em C
         run: bash build.sh
 
-      - name: compila os cinco portes
+      - name: compila os sete portes
         run: |
           set -euo pipefail
+          # O C++ com avisos ligados: um porte que compila com aviso e um
+          # porte que ninguem leu.
+          g++ -O2 -std=c++20 -Wall -Wextra -o ports/cpp/fvm_cpp ports/cpp/fvm.cpp
+          (cd ports/zig  && zig build-exe -O ReleaseFast --name fvm_zig fvm.zig)
           (cd ports/nim  && nim c -d:release --hints:off --out:fvm_nim fvm.nim)
           (cd ports/odin && odin build fvm.odin -file -o:speed -out:fvm_odin)
           (cd ports/d    && ldc2 -O3 --release -of=fvm_d fvm.d)
