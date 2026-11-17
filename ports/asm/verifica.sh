@@ -51,8 +51,18 @@ tem()   { command -v "$1" >/dev/null 2>&1; }
 SUPORTADOS=(arith control)
 RECUSADOS=(arrays fib locals gc)
 
+# A busca do binário em C é por GLOB, e não por uma lista escrita à mão.
+#
+# A primeira versão listava `build-goto/fvm build/fvm c/build/fvm` -- os
+# caminhos que existiam NESTA máquina. No CI, o `build.sh` cria
+# `build-linux-goto/`, `build-linux-switch/` e outros, e o job falhou com
+# "a implementação em C não está compilada".
+#
+# A lista estava certa sobre a máquina de quem a escreveu e errada sobre o
+# projeto. Um glob sobre `build*/fvm` descreve o que o `build.sh` produz, em
+# vez de onde ele já produziu uma vez.
 C_BIN=""
-for cand in build-goto/fvm build/fvm c/build/fvm; do
+for cand in build*/fvm c/build*/fvm; do
     [ -x "$cand" ] && C_BIN="$cand" && break
 done
 

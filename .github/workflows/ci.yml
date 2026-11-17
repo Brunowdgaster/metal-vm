@@ -151,7 +151,12 @@ jobs:
           # risco e concreto -- o Zig muda a biblioteca padrao entre versoes
           # menores, e `std.io.bufferedWriter` ja mudou de nome antes.
           ver=0.14.1
-          curl -sSL -o zig.tar.xz "https://ziglang.org/download/$ver/zig-linux-x86_64-$ver.tar.xz"
+          # O nome do arquivo e `zig-x86_64-linux-...`: ARQUITETURA antes do
+          # SISTEMA. A convencao antiga era `zig-linux-x86_64-`, e ela mudou
+          # no 0.14 -- a URL antiga devolve 404 com 146 bytes de HTML, e o
+          # `tar` falha com "Error is not recoverable" em vez de dizer que o
+          # download nao era um arquivo.
+          curl -fsSL -o zig.tar.xz "https://ziglang.org/download/$ver/zig-x86_64-linux-$ver.tar.xz"
           mkdir -p "$HOME/zig" && tar xJf zig.tar.xz -C "$HOME/zig" --strip-components=1
           test -x "$HOME/zig/zig" || { echo 'binario do Zig nao encontrado'; exit 1; }
           echo "$HOME/zig" >> "$GITHUB_PATH"
