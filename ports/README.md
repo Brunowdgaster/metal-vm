@@ -144,6 +144,65 @@ A correção é `r11`, escolhido por ser *caller-saved* na ABI System V e não s
 usado por nenhum opcode do arquivo — e a escolha está documentada porque ela é
 a única coisa que impede o bug de voltar.
 
+### As três arquiteturas, e o que cada conjunto de instruções escolheu
+
+Os três arquivos fazem a mesma coisa, e comparar linha a linha é mais
+informativo que qualquer texto sobre RISC e CISC.
+
+#### A comparação `a < b`, que é a tese de cada arquitetura em três linhas
+
+| | instruções | como |
+|---|---|---|
+| **x86-64** | 3 | `cmp` escreve FLAGS; `setcc` põe 0/1 num **byte**; `movzx` estende |
+| **ARM64** | 2 | `cmp` escreve NZCV; `cset` põe 0/1 no registrador **inteiro** |
+| **RISC-V** | **1** | `slt` compara **e** escreve 0/1 — não há registrador de condição |
+
+E o preço do RISC-V aparece em `<=` e `>=`, que **não têm instrução**: são
+`slt` com os operandos trocados mais um `xori` para inverter. Ter menos
+instruções e pagar nos casos derivados é a tese da arquitetura, e ela fica
+visível em seis linhas de `op_le` e `op_ge`.
+
+#### O laço de despacho
+
+| | instruções | o que falta |
+|---|---|---|
+| **x86-64** | 4 | — |
+| **ARM64** | 5 | o salto indireto não aceita índice escalado na mesma instrução |
+| **RISC-V** | 6 | **não há pós-indexação**: ler o byte e avançar o `ip` são duas instruções |
+
+`ldrb w9, [x19], #1` do ARM64 lê **e** incrementa. No RISC-V são `lbu` e
+`addi`, porque carregar e modificar o ponteiro são operações distintas e a
+arquitetura não as funde.
+
+#### Três diferenças de sistema, não de instrução
+
+**Não existe `open` no ARM64 nem no RISC-V.** As duas usam a tabela "genérica"
+de syscalls, definida depois da limpeza, e só têm `openat(AT_FDCWD, ...)`. O
+x86-64 carrega a tabela histórica e tem as duas.
+
+**O endereço de um rótulo custa duas instruções** nas duas arquiteturas de
+largura fixa: `adrp`+`add` no ARM64, `auipc`+`addi` no RISC-V (que o montador
+esconde atrás de `la`). O x86-64 resolve com `lea reg, [rip + rotulo]`.
+
+**O módulo só existe no RISC-V.** O `rem` vem no mesmo conjunto base da
+multiplicação. No ARM64 é `sdiv` seguido de `msub` — `resto = a - (a/b)*b`. No
+x86-64, `idiv` entrega quociente e resto em dois registradores de uma vez,
+que é o extremo oposto do mesmo problema.
+
+#### E a disciplina de registradores passou a ser escrita antes
+
+O porte x86-64 deu **segmentation fault** porque `checa1` usava `rax`, que era
+onde `op_jnz` guardava o destino do salto.
+
+Os portes ARM64 e RISC-V foram escritos com o mapa de registradores no topo do
+arquivo — qual registrador é o `ip`, qual é o `sp`, e **qual é reservado às
+rotinas auxiliares**. Os dois passaram nos quatro testes na primeira
+montagem.
+
+> A diferença entre os três arquivos não é de habilidade: é de **ter declarado
+> a convenção antes de escrever o código que depende dela.** Em Assembly não há
+> compilador para fazer isso, e foi o segfault que ensinou.
+
 ## O que cada linguagem deu, e o que cobrou
 
 ### Nim — e o mesmo bug que o C teve
